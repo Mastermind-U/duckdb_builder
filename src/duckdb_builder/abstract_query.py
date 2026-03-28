@@ -7,12 +7,17 @@ from .composite_table import Column, Condition, FunctionCall, Table
 class AbstractQuery:
     def __init__(
         self,
-        table: Table,
+        table: Table | None,
         columns: tuple[Column | FunctionCall, ...] = (),
     ) -> None:
-        self._table: Table = table
+        self._table: Table | None = table
         self._columns: tuple[Column | FunctionCall, ...] = columns
         self._where_condition: Condition | None = None
+
+    def _get_table(self) -> Table:
+        if self._table is None:
+            raise ValueError("FROM clause is required")
+        return self._table
 
     def where(
         self,
@@ -41,11 +46,12 @@ class AbstractQuery:
     ) -> Self:
         qs = copy(self)
         combined_condition: Condition | None = None
+        table = self._get_table()
 
         for key, value in kwargs.items():
             col: Column = Column(
                 key,
-                self._table.get_alias(),
+                table.get_alias(),
             )
             condition = Condition(
                 column=col,

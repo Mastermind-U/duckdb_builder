@@ -169,10 +169,10 @@ class FunctionCall:
         args_sql = ", ".join(sql_args)
         return f"{self.name}({args_sql})", tuple(params)
 
-    def __eq__(self, other: object) -> Any:  # type: ignore[override]
+    def __eq__(self, other: object) -> Any:
         return Condition(column=self, operator="=", value=other)
 
-    def __ne__(self, other: object) -> Any:  # type: ignore[override]
+    def __ne__(self, other: object) -> Any:
         return Condition(column=self, operator="!=", value=other)
 
     def __lt__(self, other: Any) -> Any:

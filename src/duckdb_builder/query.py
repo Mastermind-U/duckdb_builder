@@ -8,14 +8,8 @@ from .composite_table import Column, Condition, FunctionCall, Table
 
 
 class select(AbstractQuery):
-    def __init__(
-        self,
-        table: Table | AbstractQuery,
-        *columns: Column | FunctionCall,
-    ) -> None:
-        if isinstance(table, AbstractQuery):
-            table = Table(table)
-        super().__init__(table=table, columns=columns)
+    def __init__(self, *columns: Column | FunctionCall) -> None:
+        super().__init__(table=None, columns=columns)
         self._having_condition: Condition | None = None
         self._group_by_columns: tuple[Column, ...] = ()
         self._group_by_type: str = "normal"
@@ -29,6 +23,7 @@ class select(AbstractQuery):
 
     def build_query(self) -> tuple[str, tuple[Any, ...]]:
         params: list[Any] = []
+        table = self._get_table()
 
         if not self._columns:
             col_part: str = "*"
@@ -48,11 +43,11 @@ class select(AbstractQuery):
             col_part = ", ".join(col_parts)
 
         distinct_part = "DISTINCT " if self._distinct else ""
-        table_sql, table_params = self._table.to_sql()
+        table_sql, table_params = table.to_sql()
         query: str = (
             f"SELECT {distinct_part}{col_part} "  # noqa: S608
             f"FROM {table_sql} "
-            f'AS "{self._table.get_alias()}"'
+            f'AS "{table.get_alias()}"'
         )
         params.extend(table_params)
 
@@ -274,11 +269,12 @@ class select(AbstractQuery):
 
         qs = copy(self)
         combined_condition: Condition | None = None
+        table = self._get_table()
 
         for key, value in kwargs.items():
             col: Column = Column(
                 key,
-                self._table.get_alias(),
+                table.get_alias(),
             )
             condition = Condition(
                 column=col,
@@ -338,6 +334,11 @@ class select(AbstractQuery):
         qs._grouping_sets = column_sets
         return qs
 
+    def from_(self, table: Table | AbstractQuery) -> Self:
+        qs = copy(self)
+        qs._table = table if isinstance(table, Table) else Table(table)
+        return qs
+
 
 class insert(AbstractQuery):
     def __init__(
@@ -361,6 +362,7 @@ class insert(AbstractQuery):
     def build_query(self) -> tuple[str, tuple[Any, ...]]:
         if not self._values:
             raise ValueError("No values provided for insert")
+        table = self._get_table()
 
         columns = list(self._values.keys())
         col_names = ", ".join(f'"{col}"' for col in columns)
@@ -377,7 +379,7 @@ class insert(AbstractQuery):
             insert_stmnt += " OR IGNORE"
 
         query = (
-            f'{insert_stmnt} INTO "{self._table.get_table_name()}" '
+            f'{insert_stmnt} INTO "{table.get_table_name()}" '
             f"({col_names}) VALUES ({placeholders})"
         )
 
@@ -399,7 +401,8 @@ class update(AbstractQuery):
         if not self._values:
             raise ValueError("No values provided for update")
 
-        table_alias = self._table.get_alias()
+        table = self._get_table()
+        table_alias = table.get_alias()
         assignments: list[str] = []
         params: list[Any] = []
 
@@ -417,7 +420,7 @@ class update(AbstractQuery):
                 params.append(value)
 
         query = (
-            f'UPDATE "{self._table.get_table_name()}" '  # noqa: S608
+            f'UPDATE "{table.get_table_name()}" '  # noqa: S608
             f'AS "{table_alias}" '
             f"SET {', '.join(assignments)}"
         )
@@ -448,9 +451,10 @@ class delete(AbstractQuery):
         return self
 
     def build_query(self) -> tuple[str, tuple[Any, ...]]:
+        table = self._get_table()
         query = (
-            f'DELETE FROM "{self._table.get_table_name()}" '  # noqa: S608
-            f'AS "{self._table.get_alias()}"'
+            f'DELETE FROM "{table.get_table_name()}" '  # noqa: S608
+            f'AS "{table.get_alias()}"'
         )
         params: list[Any] = []
 
