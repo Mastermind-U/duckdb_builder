@@ -1,6 +1,6 @@
 # SQL Fusion
 
-SQL Fusion is a lightweight, chainable SQL query builder for Python.
+SQL Fusion is a lightweight, chainable SQL query builder for Python with zero dependencies.
 
 It focuses on one job:
 
@@ -14,6 +14,22 @@ The library does not execute SQL itself. It returns:
 - the parameter tuple
 
 That makes it easy to plug into your own connection layer.
+
+## Table of Contents
+
+- [What You Get](#what-you-get)
+- [Installation](#installation)
+- [Public API](#public-api)
+- [Quickstart: SQLite3](#quickstart-sqlite3)
+- [Quickstart: DuckDB](#quickstart-duckdb)
+- [Quickstart: psycopg3](#quickstart-psycopg3)
+- [Query Basics](#query-basics)
+- [Method Reference](#method-reference)
+- [Functions](#functions)
+- [CTEs](#ctes)
+- [Custom Compile Expressions](#custom-compile-expressions)
+- [What To Remember](#what-to-remember)
+- [Potential Additions](#potential-additions)
 
 ## What You Get
 
@@ -506,12 +522,3 @@ The library also exposes a few built-in compile-time helpers:
 - query builders are chainable
 - repeated calls to many methods merge rather than overwrite
 - backend support still depends on the database you execute against
-
-## Potential Additions
-
-If you want the README to be even more complete, the next useful sections would be:
-
-- a tiny schema example for each backend
-- a supported-operators cheat sheet
-- a short "common patterns" gallery
-- a changelog or versioned release notes section
