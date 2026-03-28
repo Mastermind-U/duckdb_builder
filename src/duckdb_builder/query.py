@@ -1,4 +1,4 @@
-"""DuckDB query builder."""
+"""Query builder."""
 
 from copy import copy
 from typing import Any, Self
@@ -8,7 +8,13 @@ from .composite_table import Column, Condition, FunctionCall, Table
 
 
 class select(AbstractQuery):
-    def __init__(self, table: Table, *columns: Column | FunctionCall) -> None:
+    def __init__(
+        self,
+        table: Table | AbstractQuery,
+        *columns: Column | FunctionCall,
+    ) -> None:
+        if isinstance(table, AbstractQuery):
+            table = Table(table)
         super().__init__(table=table, columns=columns)
         self._having_condition: Condition | None = None
         self._group_by_columns: tuple[Column, ...] = ()
@@ -42,14 +48,13 @@ class select(AbstractQuery):
             col_part = ", ".join(col_parts)
 
         distinct_part = "DISTINCT " if self._distinct else ""
+        table_sql, table_params = self._table.to_sql()
         query: str = (
             f"SELECT {distinct_part}{col_part} "  # noqa: S608
-            f'FROM "{self._table.get_table_name()}" '
+            f"FROM {table_sql} "
             f'AS "{self._table.get_alias()}"'
         )
-
-        if not self._columns:
-            params: list[Any] = []
+        params.extend(table_params)
 
         # Add JOIN clauses
         if self._joins:
@@ -89,10 +94,9 @@ class select(AbstractQuery):
 
         for join_type, join_table, condition in self._joins:
             joins_sql += f" {join_type} JOIN "
-            joins_sql += (
-                f'"{join_table.get_table_name()}" '
-                f'AS "{join_table.get_alias()}"'
-            )
+            join_sql, join_params = join_table.to_sql()
+            joins_sql += f'{join_sql} AS "{join_table.get_alias()}"'
+            joins_params.extend(join_params)
 
             # CROSS JOIN doesn't have an ON clause
             if condition is not None:
@@ -102,52 +106,90 @@ class select(AbstractQuery):
 
         return joins_sql, joins_params
 
-    def join(self, table: Table, condition: Condition) -> Self:
+    def join(
+        self,
+        table: Table | AbstractQuery,
+        condition: Condition,
+    ) -> Self:
         """Add an INNER JOIN clause."""
         qs = copy(self)
         qs._joins = self._joins.copy()
+        if isinstance(table, AbstractQuery):
+            table = Table(table)
         qs._joins.append(("INNER", table, condition))
         return qs
 
-    def left_join(self, table: Table, condition: Condition) -> Self:
+    def left_join(
+        self,
+        table: Table | AbstractQuery,
+        condition: Condition,
+    ) -> Self:
         """Add a LEFT JOIN clause."""
         qs = copy(self)
         qs._joins = self._joins.copy()
+        if isinstance(table, AbstractQuery):
+            table = Table(table)
         qs._joins.append(("LEFT", table, condition))
         return qs
 
-    def right_join(self, table: Table, condition: Condition) -> Self:
+    def right_join(
+        self,
+        table: Table | AbstractQuery,
+        condition: Condition,
+    ) -> Self:
         """Add a RIGHT JOIN clause."""
         qs = copy(self)
         qs._joins = self._joins.copy()
+        if isinstance(table, AbstractQuery):
+            table = Table(table)
         qs._joins.append(("RIGHT", table, condition))
         return qs
 
-    def full_join(self, table: Table, condition: Condition) -> Self:
+    def full_join(
+        self,
+        table: Table | AbstractQuery,
+        condition: Condition,
+    ) -> Self:
         """Add a FULL OUTER JOIN clause."""
         qs = copy(self)
         qs._joins = self._joins.copy()
+        if isinstance(table, AbstractQuery):
+            table = Table(table)
         qs._joins.append(("FULL OUTER", table, condition))
         return qs
 
-    def cross_join(self, table: Table) -> Self:
+    def cross_join(self, table: Table | AbstractQuery) -> Self:
         """Add a CROSS JOIN clause (cartesian product)."""
         qs = copy(self)
         qs._joins = self._joins.copy()
+        if isinstance(table, AbstractQuery):
+            table = Table(table)
         qs._joins.append(("CROSS", table, None))
         return qs
 
-    def semi_join(self, table: Table, condition: Condition) -> Self:
+    def semi_join(
+        self,
+        table: Table | AbstractQuery,
+        condition: Condition,
+    ) -> Self:
         """Add a SEMI JOIN clause (exists check)."""
         qs = copy(self)
         qs._joins = self._joins.copy()
+        if isinstance(table, AbstractQuery):
+            table = Table(table)
         qs._joins.append(("SEMI", table, condition))
         return qs
 
-    def anti_join(self, table: Table, condition: Condition) -> Self:
+    def anti_join(
+        self,
+        table: Table | AbstractQuery,
+        condition: Condition,
+    ) -> Self:
         """Add an ANTI JOIN clause (not exists check)."""
         qs = copy(self)
         qs._joins = self._joins.copy()
+        if isinstance(table, AbstractQuery):
+            table = Table(table)
         qs._joins.append(("ANTI", table, condition))
         return qs
 

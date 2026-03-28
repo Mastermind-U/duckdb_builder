@@ -1,7 +1,12 @@
+from collections.abc import Sequence
 from copy import copy
-from typing import Any, Callable
+from typing import Any, Callable, Protocol, TypeGuard, cast
 
 from .operators import OPERATORS
+
+
+class QueryLike(Protocol):
+    def build_query(self) -> tuple[str, tuple[Any, ...]]: ...
 
 
 class Condition:
@@ -66,6 +71,13 @@ class Condition:
                     return f"{func_sql} {self.operator} {value_sql}", tuple(
                         params,
                     )
+                if _is_query_like(self.value):
+                    subquery_sql, subquery_params = self.value.build_query()
+                    params.extend(subquery_params)
+                    return (
+                        f"{func_sql} {self.operator} ({subquery_sql})",
+                        tuple(params),
+                    )
                 # Literal value
                 params.append(self.value)
                 return f"{func_sql} {self.operator} ?", tuple(params)
@@ -76,6 +88,25 @@ class Condition:
             # Handle JOIN conditions where value is a Column
             if isinstance(self.value, Column):
                 return self.value.ref_to_sql(col_ref, self.operator), tuple()
+
+            if _is_query_like(self.value):
+                subquery_sql, subquery_params = self.value.build_query()
+                return (
+                    f"{col_ref} {self.operator} ({subquery_sql})",
+                    subquery_params,
+                )
+
+            if self.operator in {"IN", "NOT IN"}:
+                if _is_value_sequence(self.value):
+                    values: tuple[Any, ...] = tuple(self.value)
+                else:
+                    values = (self.value,)
+
+                placeholders: str = ", ".join("?" * len(values))
+                return (
+                    f"{col_ref} {self.operator} ({placeholders})",
+                    values,
+                )
 
             if self.operator in OPERATORS:
                 operator_class = OPERATORS[self.operator]
@@ -221,8 +252,11 @@ class Column:
     def ilike(self, pattern: str) -> Condition:
         return Condition(column=self, operator="ILIKE", value=pattern)
 
-    def in_(self, values: tuple[Any, ...] | list[Any]) -> Condition:
+    def in_(self, values: tuple[Any, ...] | list[Any] | Any) -> Condition:
         return Condition(column=self, operator="IN", value=values)
+
+    def not_in(self, values: tuple[Any, ...] | list[Any] | Any) -> Condition:
+        return Condition(column=self, operator="NOT IN", value=values)
 
     def __hash__(self) -> int:
         raise TypeError(f"unhashable type: '{type(self).__name__}'")
@@ -253,8 +287,19 @@ class Column:
 class Table:
     _alias_counter: int = 0
 
-    def __init__(self, name: str, alias: str | None = None) -> None:
-        self._table_name: str = name
+    def __init__(
+        self,
+        name: str | QueryLike,
+        alias: str | None = None,
+    ) -> None:
+        self._table_name: str = ""
+        self._subquery: QueryLike | None = None
+
+        if _is_query_like(name):
+            self._subquery = name
+        else:
+            self._table_name = cast("str", name)
+
         if alias:
             self._alias: str = alias
         else:
@@ -269,10 +314,19 @@ class Table:
         cls._alias_counter = 0
 
     def get_table_name(self) -> str:
+        if self._subquery is not None:
+            return self.to_sql()[0]
         return self._table_name
 
     def get_alias(self) -> str:
         return self._alias
+
+    def to_sql(self) -> tuple[str, tuple[Any, ...]]:
+        if self._subquery is not None:
+            subquery_sql, subquery_params = self._subquery.build_query()
+            return f"({subquery_sql})", subquery_params
+
+        return f'"{self._table_name}"', tuple()
 
     def __getattr__(self, column_name: str) -> Column:
         if column_name.startswith("_"):
@@ -281,3 +335,11 @@ class Table:
                 f"object has no attribute '{column_name}'",
             )
         return Column(column_name, self._alias)
+
+
+def _is_query_like(value: object | None) -> TypeGuard[QueryLike]:
+    return value is not None and hasattr(value, "build_query")
+
+
+def _is_value_sequence(value: object | None) -> TypeGuard[Sequence[Any]]:
+    return isinstance(value, (list, tuple))
