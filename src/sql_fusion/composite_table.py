@@ -1,76 +1,76 @@
-from collections.abc import Sequence
 from copy import copy
 from typing import Any, Callable, Protocol, TypeGuard, cast
 
-from .operators import OPERATORS
-
-ColumnComparisonHandler = Callable[[str, str], str]
-
-COLUMN_COMPARISON_OPERATORS: dict[str, ColumnComparisonHandler] = {
-    "=": lambda column_ref, value_ref: f"{column_ref} = {value_ref}",
-    "!=": lambda column_ref, value_ref: f"{column_ref} != {value_ref}",
-    "<": lambda column_ref, value_ref: f"{column_ref} < {value_ref}",
-    ">": lambda column_ref, value_ref: f"{column_ref} > {value_ref}",
-    "<=": lambda column_ref, value_ref: f"{column_ref} <= {value_ref}",
-    ">=": lambda column_ref, value_ref: f"{column_ref} >= {value_ref}",
-}
+from .operators import (
+    AbstractOperator,
+    EqualOperator,
+    GreaterThanOperator,
+    GreaterThanOrEqualOperator,
+    IlikeOperator,
+    InOperator,
+    LessThanOperator,
+    LessThanOrEqualOperator,
+    LikeOperator,
+    NotEqualOperator,
+    NotInOperator,
+)
 
 
 class QueryLike(Protocol):
     def build_query(self) -> tuple[str, tuple[Any, ...]]: ...
 
 
-class RefComparable:
-    def get_ref(self) -> str:
-        raise NotImplementedError()
-
-    def to_sql(self) -> str:
-        return self.get_ref()
-
-    def ref_to_sql(self, col_ref: str, operator: str) -> str:
-        comparator = COLUMN_COMPARISON_OPERATORS.get(operator)
-        if comparator is None:
-            return ""
-        return comparator(col_ref, self.get_ref())
+class ComparableExpression:
+    def _cond(
+        self,
+        operator: type[AbstractOperator],
+        other: object,
+    ) -> Condition:
+        return Condition(column=self, operator=operator, value=other)
 
     def __eq__(self, other: object) -> Condition:  # type: ignore[override]
-        return Condition(column=self, operator="=", value=other)
+        return self._cond(EqualOperator, other)
 
     def __ne__(self, other: object) -> Condition:  # type: ignore[override]
-        return Condition(column=self, operator="!=", value=other)
+        return self._cond(NotEqualOperator, other)
 
     def __lt__(self, other: Any) -> Condition:
-        return Condition(column=self, operator="<", value=other)
+        return self._cond(LessThanOperator, other)
 
     def __gt__(self, other: Any) -> Condition:
-        return Condition(column=self, operator=">", value=other)
+        return self._cond(GreaterThanOperator, other)
 
     def __le__(self, other: Any) -> Condition:
-        return Condition(column=self, operator="<=", value=other)
+        return self._cond(LessThanOrEqualOperator, other)
 
     def __ge__(self, other: Any) -> Condition:
-        return Condition(column=self, operator=">=", value=other)
+        return self._cond(GreaterThanOrEqualOperator, other)
 
     def __hash__(self) -> int:
         raise TypeError(f"unhashable type: '{type(self).__name__}'")
+
+    def get_ref(self) -> str:
+        raise NotImplementedError()
 
 
 class Condition:
     def __init__(  # noqa: PLR0913
         self,
-        column: RefComparable | FunctionCall | None = None,
-        operator: str = "",
+        column: ComparableExpression | FunctionCall | None = None,
+        operator: type[AbstractOperator] | None = None,
         value: object | None = None,
         is_and: bool = True,
         left: Condition | None = None,
         right: Condition | None = None,
+        negated: bool = False,
     ) -> None:
-        self.column: RefComparable | FunctionCall | None = column
-        self.operator: str = operator
+        self.column: ComparableExpression | FunctionCall | None = column
+        self.operator: type[AbstractOperator] | None = operator
         self.value: object | None = value
         self.is_and: bool = is_and
         self.left: Condition | None = left
         self.right: Condition | None = right
+        self.negated: bool = negated
 
     def __and__(self, other: Condition) -> Condition:
         return Condition(is_and=True, left=self, right=other)
@@ -80,74 +80,90 @@ class Condition:
 
     def __invert__(self) -> Condition:
         result = copy(self)
-        result.operator = (
-            f"NOT ({result.operator})" if self.operator else "NOT"
-        )
+        result.negated = not self.negated
         return result
 
     def to_sql(self) -> tuple[str, tuple[Any, ...]]:  # noqa: PLR0911
+        def apply_negation(
+            sql: str,
+            params: tuple[Any, ...],
+        ) -> tuple[str, tuple[Any, ...]]:
+            if self.negated:
+                return (f"NOT ({sql})" if sql else "NOT", params)
+            return sql, params
+
         if self.left and self.right:
             left_sql, left_params = self.left.to_sql()
             right_sql, right_params = self.right.to_sql()
             operator_str: str = "AND" if self.is_and else "OR"
-            return (
+            return apply_negation(
                 f"({left_sql} {operator_str} {right_sql})",
                 left_params + right_params,
             )
 
         if not self.column:
-            return "", tuple()
+            return apply_negation("", tuple())
 
         if isinstance(self.column, FunctionCall):
             func_sql, func_params = self.column.to_sql()
-            params: list[Any] = list(func_params)
+            operator_class = self.operator
+            if operator_class is None:
+                return apply_negation(func_sql, func_params)
 
-            value_sql, value_params = _render_condition_value(self.value)
-            if value_sql is not None:
-                params.extend(value_params)
-                return (
-                    f"{func_sql} {self.operator} {value_sql}",
-                    tuple(params),
+            if isinstance(self.value, FunctionCall):
+                value_sql, value_params = self.value.to_sql()
+                sql, op_params = operator_class(func_sql).to_sql_ref(
+                    value_sql,
+                )
+                return apply_negation(
+                    sql,
+                    func_params + value_params + op_params,
                 )
 
-            params.append(self.value)
-            return f"{func_sql} {self.operator} ?", tuple(params)
+            if isinstance(self.value, ComparableExpression):
+                sql, op_params = operator_class(func_sql).to_sql_ref(
+                    self.value.get_ref(),
+                )
+                return apply_negation(sql, func_params + op_params)
+
+            if _is_query_like(self.value):
+                subquery_sql, subquery_params = self.value.build_query()
+                return apply_negation(
+                    f"{func_sql} {operator_class.sql_symbol} ({subquery_sql})",
+                    func_params + subquery_params,
+                )
+
+            sql, op_params = operator_class(func_sql).to_sql(self.value)
+            return apply_negation(sql, func_params + op_params)
 
         col_ref: str = self.column.get_ref()
+        operator_class = self.operator
+        if operator_class is None:
+            return apply_negation(col_ref, tuple())
 
-        if isinstance(self.value, RefComparable):
-            return (
-                self.value.ref_to_sql(col_ref, self.operator),
-                tuple(),
+        if isinstance(self.value, FunctionCall):
+            value_sql, value_params = self.value.to_sql()
+            sql, op_params = operator_class(col_ref).to_sql_ref(value_sql)
+            return apply_negation(sql, value_params + op_params)
+
+        if isinstance(self.value, ComparableExpression):
+            sql, op_params = operator_class(col_ref).to_sql_ref(
+                self.value.get_ref(),
             )
+            return apply_negation(sql, op_params)
 
         if _is_query_like(self.value):
             subquery_sql, subquery_params = self.value.build_query()
-            return (
-                f"{col_ref} {self.operator} ({subquery_sql})",
+            return apply_negation(
+                f"{col_ref} {operator_class.sql_symbol} ({subquery_sql})",
                 subquery_params,
             )
 
-        if self.operator in {"IN", "NOT IN"}:
-            if _is_value_sequence(self.value):
-                values: tuple[Any, ...] = tuple(self.value)
-            else:
-                values = (self.value,)
-
-            placeholders: str = ", ".join("?" * len(values))
-            return (
-                f"{col_ref} {self.operator} ({placeholders})",
-                values,
-            )
-
-        if self.operator in OPERATORS:
-            operator_class = OPERATORS[self.operator]
-            return operator_class(col_ref).to_sql(self.value)
-
-        return "", tuple()
+        sql, op_params = operator_class(col_ref).to_sql(self.value)
+        return apply_negation(sql, op_params)
 
 
-class Alias(RefComparable):
+class Alias(ComparableExpression):
     """Represents a named SQL alias."""
 
     def __init__(self, name: str) -> None:
@@ -159,8 +175,11 @@ class Alias(RefComparable):
     def __repr__(self) -> str:
         return f"Alias({self.name!r})"
 
+    def to_sql(self) -> str:
+        return self.get_ref()
 
-class FunctionCall:
+
+class FunctionCall(ComparableExpression):
     """Represents a SQL function call with arguments."""
 
     def __init__(self, name: str, *args: Any) -> None:
@@ -226,24 +245,6 @@ class FunctionCall:
             sql = f"{sql} AS {self._alias.get_ref()}"
         return sql, tuple(params)
 
-    def __eq__(self, other: object) -> Any:
-        return Condition(column=self, operator="=", value=other)
-
-    def __ne__(self, other: object) -> Any:
-        return Condition(column=self, operator="!=", value=other)
-
-    def __lt__(self, other: Any) -> Any:
-        return Condition(column=self, operator="<", value=other)
-
-    def __gt__(self, other: Any) -> Any:
-        return Condition(column=self, operator=">", value=other)
-
-    def __le__(self, other: Any) -> Any:
-        return Condition(column=self, operator="<=", value=other)
-
-    def __ge__(self, other: Any) -> Any:
-        return Condition(column=self, operator=">=", value=other)
-
     def __repr__(self) -> str:
         args_repr = ", ".join(repr(arg) for arg in self.args)
         if self._alias is None:
@@ -282,7 +283,7 @@ class FunctionRegistry:
 func = FunctionRegistry()
 
 
-class Column(RefComparable):
+class Column(ComparableExpression):
     def __init__(self, name: str, table_alias: str) -> None:
         self.name: str = name
         self.table_alias: str = table_alias
@@ -291,16 +292,16 @@ class Column(RefComparable):
         return f'"{self.table_alias}"."{self.name}"'
 
     def like(self, pattern: str) -> Condition:
-        return Condition(column=self, operator="LIKE", value=pattern)
+        return Condition(column=self, operator=LikeOperator, value=pattern)
 
     def ilike(self, pattern: str) -> Condition:
-        return Condition(column=self, operator="ILIKE", value=pattern)
+        return Condition(column=self, operator=IlikeOperator, value=pattern)
 
     def in_(self, values: tuple[Any, ...] | list[Any] | Any) -> Condition:
-        return Condition(column=self, operator="IN", value=values)
+        return Condition(column=self, operator=InOperator, value=values)
 
     def not_in(self, values: tuple[Any, ...] | list[Any] | Any) -> Condition:
-        return Condition(column=self, operator="NOT IN", value=values)
+        return Condition(column=self, operator=NotInOperator, value=values)
 
 
 class Table:
@@ -358,24 +359,3 @@ class Table:
 
 def _is_query_like(value: object | None) -> TypeGuard[QueryLike]:
     return value is not None and hasattr(value, "build_query")
-
-
-def _is_value_sequence(value: object | None) -> TypeGuard[Sequence[Any]]:
-    return isinstance(value, (list, tuple))
-
-
-def _render_condition_value(
-    value: object | None,
-) -> tuple[str | None, tuple[Any, ...]]:
-    if isinstance(value, RefComparable):
-        return value.get_ref(), tuple()
-
-    if isinstance(value, FunctionCall):
-        value_sql, value_params = value.to_sql()
-        return value_sql, value_params
-
-    if _is_query_like(value):
-        subquery_sql, subquery_params = value.build_query()
-        return f"({subquery_sql})", subquery_params
-
-    return None, tuple()

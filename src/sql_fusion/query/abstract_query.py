@@ -10,6 +10,7 @@ from sql_fusion.composite_table import (
     QueryLike,
     Table,
 )
+from sql_fusion.operators import EqualOperator
 
 CompileExpression = Callable[
     [str, tuple[Any, ...]],
@@ -156,7 +157,7 @@ class AbstractQuery:
             )
             condition = Condition(
                 column=col,
-                operator="=",
+                operator=EqualOperator,
                 value=value,
             )
             if combined_condition is None:

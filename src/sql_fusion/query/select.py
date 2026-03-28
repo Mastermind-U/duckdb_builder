@@ -8,6 +8,7 @@ from sql_fusion.composite_table import (
     FunctionCall,
     Table,
 )
+from sql_fusion.operators import EqualOperator
 from sql_fusion.query.abstract_query import AbstractQuery
 
 
@@ -25,7 +26,7 @@ class select(AbstractQuery):
         self._offset: int | None = None
         self._distinct: bool = False
 
-    def build_query(self) -> tuple[str, tuple[Any, ...]]:
+    def build_query(self) -> tuple[str, tuple[Any, ...]]:  # noqa: PLR0912
         params: list[Any] = []
         with_sql, with_params = self._build_with_clause()
         params.extend(with_params)
@@ -333,7 +334,7 @@ class select(AbstractQuery):
             )
             condition = Condition(
                 column=col,
-                operator="=",
+                operator=EqualOperator,
                 value=value,
             )
             if combined_condition is None:
