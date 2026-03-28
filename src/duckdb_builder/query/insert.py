@@ -43,12 +43,27 @@ class insert(AbstractQuery):
         elif self._or_ignore:
             insert_stmnt += " OR IGNORE"
 
-        query = (
-            f'{with_sql}{insert_stmnt} INTO "{table.get_table_name()}" '
-            f"({col_names}) VALUES ({placeholders})"
+        into_clause = self._build_clause(
+            "INTO",
+            "INTO",
+            f'"{table.get_table_name()}" ({col_names})',
+        )
+        values_clause = self._build_clause(
+            "VALUES",
+            "VALUES",
+            f"({placeholders})",
+        )
+        query = self._build_clause(
+            "INSERT",
+            insert_stmnt,
+            f"{into_clause} {values_clause}",
         )
 
+        query_parts = [query]
+        if with_sql:
+            query_parts.insert(0, with_sql)
+
         return self._apply_compile_expressions(
-            query,
+            " ".join(query_parts),
             tuple(with_params) + params,
         )

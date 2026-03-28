@@ -38,18 +38,23 @@ class update(AbstractQuery):
                 assignments.append(f"{column_ref} = ?")
                 params.append(value)
 
-        query = (
-            f'{with_sql}UPDATE "{table.get_table_name()}" '  # noqa: S608
-            f'AS "{table_alias}" '
-            f"SET {', '.join(assignments)}"
+        set_clause = self._build_clause(
+            "SET",
+            "SET",
+            ", ".join(assignments),
+        )
+        query = self._build_clause(
+            "UPDATE",
+            "UPDATE",
+            f'"{table.get_table_name()}" AS "{table_alias}" {set_clause}',
         )
 
         if self._where_condition:
             where_sql, where_params = self._where_condition.to_sql()
-            query += f" WHERE {where_sql}"
+            query += f" {self._build_clause('WHERE', 'WHERE', where_sql)}"
             params.extend(where_params)
 
         return self._apply_compile_expressions(
-            query,
+            f"{with_sql} {query}" if with_sql else query,
             tuple(with_params + params),
         )

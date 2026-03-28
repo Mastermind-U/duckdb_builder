@@ -28,6 +28,8 @@ class AbstractQuery:
         self._ctes: list[tuple[str, QueryLike]] = []
         self._with_recursive: bool = False
         self._compile_expressions: list[CompileExpression] = []
+        self._before_clause_comments: dict[str, list[tuple[str, bool]]] = {}
+        self._after_clause_comments: dict[str, list[tuple[str, bool]]] = {}
 
     def _get_table(self) -> Table:
         if self._table is None:
@@ -94,6 +96,50 @@ class AbstractQuery:
     def analyze(self, *, verbose: bool = False) -> Self:
         return self.explain(analyze=True, verbose=verbose)
 
+    def before_clause(
+        self,
+        clause: str,
+        text: str,
+        *,
+        hint: bool = False,
+    ) -> Self:
+        qs = copy(self)
+        qs._before_clause_comments = {
+            key: value.copy()
+            for key, value in self._before_clause_comments.items()
+        }
+        qs._after_clause_comments = {
+            key: value.copy()
+            for key, value in self._after_clause_comments.items()
+        }
+        clause_key = clause.upper()
+        qs._before_clause_comments.setdefault(clause_key, []).append(
+            (text, hint),
+        )
+        return qs
+
+    def after_clause(
+        self,
+        clause: str,
+        text: str,
+        *,
+        hint: bool = False,
+    ) -> Self:
+        qs = copy(self)
+        qs._before_clause_comments = {
+            key: value.copy()
+            for key, value in self._before_clause_comments.items()
+        }
+        qs._after_clause_comments = {
+            key: value.copy()
+            for key, value in self._after_clause_comments.items()
+        }
+        clause_key = clause.upper()
+        qs._after_clause_comments.setdefault(clause_key, []).append(
+            (text, hint),
+        )
+        return qs
+
     def where_by(
         self,
         **kwargs: Any,
@@ -153,7 +199,12 @@ class AbstractQuery:
             params.extend(query_params)
 
         recursive_part = " RECURSIVE" if self._with_recursive else ""
-        return f"WITH{recursive_part} {', '.join(with_parts)} ", params
+        keyword = f"WITH{recursive_part}"
+        return self._build_clause(
+            "WITH",
+            keyword,
+            ", ".join(with_parts),
+        ), params
 
     def _apply_compile_expressions(
         self,
@@ -164,6 +215,46 @@ class AbstractQuery:
             sql, params = expression(sql, params)
 
         return sql, params
+
+    def _build_clause(
+        self,
+        clause: str,
+        keyword: str,
+        body: str = "",
+    ) -> str:
+        before_comments = self._render_clause_comments(
+            self._before_clause_comments.get(clause.upper(), []),
+            leading=False,
+        )
+        after_comments = self._render_clause_comments(
+            self._after_clause_comments.get(clause.upper(), []),
+            leading=True,
+        )
+
+        if body:
+            separator = "" if after_comments else " "
+            return (
+                f"{before_comments}{keyword}{after_comments}{separator}{body}"
+            )
+
+        return f"{before_comments}{keyword}{after_comments}"
+
+    @staticmethod
+    def _render_clause_comments(
+        comments: list[tuple[str, bool]],
+        *,
+        leading: bool,
+    ) -> str:
+        if not comments:
+            return ""
+
+        rendered = [
+            f"/*+ {text} */" if hint else f"/* {text} */"
+            for text, hint in comments
+        ]
+        if leading:
+            return "".join(f" {comment}\n" for comment in rendered)
+        return "".join(f"{comment}\n" for comment in rendered)
 
     def build_query(self) -> tuple[str, tuple[Any, ...]]:
         raise NotImplementedError()

@@ -25,20 +25,25 @@ class delete(AbstractQuery):
     def build_query(self) -> tuple[str, tuple[Any, ...]]:
         table = self._get_table()
         with_sql, with_params = self._build_with_clause()
-        query = (
-            f'{with_sql}DELETE FROM "{table.get_table_name()}" '  # noqa: S608
-            f'AS "{table.get_alias()}"'
+        from_clause = self._build_clause(
+            "FROM",
+            "FROM",
+            f'"{table.get_table_name()}" AS "{table.get_alias()}"',
         )
+        query = self._build_clause("DELETE", "DELETE", from_clause)
         params: list[Any] = list(with_params)
 
         if self._where_condition:
             where_sql, where_params = self._where_condition.to_sql()
-            query += f" WHERE {where_sql}"
+            query += f" {self._build_clause('WHERE', 'WHERE', where_sql)}"
             params.extend(where_params)
 
         if self._returning_all:
-            query += " RETURNING *"
-            return self._apply_compile_expressions(query, tuple(params))
+            query += f" {self._build_clause('RETURNING', 'RETURNING', '*')}"
+            return self._apply_compile_expressions(
+                f"{with_sql} {query}" if with_sql else query,
+                tuple(params),
+            )
 
         if self._returning_columns:
             returning_parts: list[str] = []
@@ -51,9 +56,16 @@ class delete(AbstractQuery):
                 else:
                     returning_parts.append(f'"{col.table_alias}"."{col.name}"')
 
-            query += f" RETURNING {', '.join(returning_parts)}"
+            query += " " + self._build_clause(
+                "RETURNING",
+                "RETURNING",
+                ", ".join(returning_parts),
+            )
 
-        return self._apply_compile_expressions(query, tuple(params))
+        return self._apply_compile_expressions(
+            f"{with_sql} {query}" if with_sql else query,
+            tuple(params),
+        )
 
     def from_(self, table: Table | AbstractQuery) -> Self:
         qs = copy(self)

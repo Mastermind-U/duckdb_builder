@@ -2,7 +2,7 @@
 
 import pytest
 
-from duckdb_builder import Table, select
+from duckdb_builder import Table, select, update
 
 
 def test_select_with_single_cte() -> None:
@@ -98,6 +98,65 @@ def test_select_with_recursive_cte() -> None:
         ') SELECT * FROM "tree" AS "b"'
     )
     assert params == (True,)
+
+
+def test_clause_comment_after_with_inserts_hint_into_cte_header() -> None:
+    orders = Table("orders")
+    recent_orders = (
+        select(orders.user_id)
+        .from_(orders)
+        .where_by(status="paid")
+    )
+
+    query, params = (
+        select()
+        .with_(recent_orders=recent_orders)
+        .after_clause("WITH", "SeqScan (ta) IndexScan (tb)", hint=True)
+        .from_(Table("recent_orders"))
+        .compile()
+    )
+
+    assert query == (
+        'WITH /*+ SeqScan (ta) IndexScan (tb) */\n'
+        '"recent_orders" AS (SELECT "a"."user_id" FROM "orders" AS "a" '
+        'WHERE "a"."status" = ?) '
+        'SELECT * FROM "recent_orders" AS "b"'
+    )
+    assert params == ("paid",)
+
+
+def test_clause_comment_after_from_inserts_hint_before_table_name() -> None:
+    users = Table("users")
+
+    query, params = (
+        select(users.id)
+        .from_(users)
+        .after_clause("FROM", "SeqScan (a)", hint=True)
+        .compile()
+    )
+
+    assert query == (
+        'SELECT "a"."id" FROM /*+ SeqScan (a) */\n"users" AS "a"'
+    )
+    assert params == ()
+
+
+def test_clause_comments_work_on_update_clauses() -> None:
+    users = Table("users")
+
+    query, params = (
+        update(users)
+        .before_clause("UPDATE", "debug")
+        .after_clause("SET", "SeqScan (a)", hint=True)
+        .set(status="inactive")
+        .compile()
+    )
+
+    assert query == (
+        '/* debug */\n'
+        'UPDATE "users" AS "a" SET /*+ SeqScan (a) */\n"a"."status" = ?'
+    )
+    assert params == ("inactive",)
 
 
 def test_comment_wrapper_prefixes_query() -> None:

@@ -47,24 +47,32 @@ class select(AbstractQuery):
 
             col_part = ", ".join(col_parts)
 
-        distinct_part = "DISTINCT " if self._distinct else ""
+        distinct_part = "SELECT DISTINCT" if self._distinct else "SELECT"
         table_sql, table_params = table.to_sql()
-        query: str = (
-            f"{with_sql}SELECT {distinct_part}{col_part} "  # noqa: S608
-            f"FROM {table_sql} "
-            f'AS "{table.get_alias()}"'
+        query_parts: list[str] = []
+        if with_sql:
+            query_parts.append(with_sql)
+        query_parts.append(
+            self._build_clause("SELECT", distinct_part, col_part),
+        )
+        query_parts.append(
+            self._build_clause(
+                "FROM",
+                "FROM",
+                f'{table_sql} AS "{table.get_alias()}"',
+            ),
         )
         params.extend(table_params)
 
         # Add JOIN clauses
         if self._joins:
             joins_sql, joins_params = self._build_joins()
-            query += joins_sql
+            query_parts.append(joins_sql)
             params.extend(joins_params)
 
         if self._where_condition:
             where_sql, where_params = self._where_condition.to_sql()
-            query += f" WHERE {where_sql}"
+            query_parts.append(self._build_clause("WHERE", "WHERE", where_sql))
             params.extend(where_params)
 
         if (
@@ -72,39 +80,57 @@ class select(AbstractQuery):
             or self._grouping_sets
             or self._group_by_type == "all"
         ):
-            query += self._build_group_by_clause()
+            group_by_sql, group_by_params = self._build_group_by_clause()
+            query_parts.append(group_by_sql)
+            params.extend(group_by_params)
 
         if self._having_condition:
             having_sql, having_params = self._having_condition.to_sql()
-            query += f" HAVING {having_sql}"
+            query_parts.append(
+                self._build_clause("HAVING", "HAVING", having_sql),
+            )
             params.extend(having_params)
 
         if self._limit is not None:
-            query += f" LIMIT {self._limit}"
+            query_parts.append(
+                self._build_clause("LIMIT", "LIMIT", str(self._limit)),
+            )
 
         if self._offset is not None:
-            query += f" OFFSET {self._offset}"
+            query_parts.append(
+                self._build_clause("OFFSET", "OFFSET", str(self._offset)),
+            )
 
-        return self._apply_compile_expressions(query, tuple(params))
+        return self._apply_compile_expressions(
+            " ".join(query_parts),
+            tuple(params),
+        )
 
     def _build_joins(self) -> tuple[str, list[Any]]:
         """Build JOIN clauses and return SQL string and parameters."""
-        joins_sql: str = ""
+        joins_sql_parts: list[str] = []
         joins_params: list[Any] = []
 
         for join_type, join_table, condition in self._joins:
-            joins_sql += f" {join_type} JOIN "
             join_sql, join_params = join_table.to_sql()
-            joins_sql += f'{join_sql} AS "{join_table.get_alias()}"'
+            join_body = f'{join_sql} AS "{join_table.get_alias()}"'
             joins_params.extend(join_params)
 
             # CROSS JOIN doesn't have an ON clause
             if condition is not None:
                 condition_sql, condition_params = condition.to_sql()
-                joins_sql += f" ON {condition_sql}"
+                join_body += f" ON {condition_sql}"
                 joins_params.extend(condition_params)
 
-        return joins_sql, joins_params
+            joins_sql_parts.append(
+                self._build_clause(
+                    "JOIN",
+                    f"{join_type} JOIN",
+                    join_body,
+                ),
+            )
+
+        return " ".join(joins_sql_parts), joins_params
 
     def join(
         self,
@@ -213,9 +239,9 @@ class select(AbstractQuery):
         qs._distinct = True
         return qs
 
-    def _build_group_by_clause(self) -> str:
+    def _build_group_by_clause(self) -> tuple[str, list[Any]]:
         if self._group_by_type == "all":
-            return " GROUP BY ALL"
+            return self._build_clause("GROUP BY", "GROUP BY", "ALL"), []
 
         col_refs: str = ", ".join(
             f'"{col.table_alias}"."{col.name}"'
@@ -223,10 +249,24 @@ class select(AbstractQuery):
         )
 
         if self._group_by_type == "rollup":
-            return f" GROUP BY ROLLUP ({col_refs})"
+            return (
+                self._build_clause(
+                    "GROUP BY",
+                    "GROUP BY",
+                    f"ROLLUP ({col_refs})",
+                ),
+                [],
+            )
 
         if self._group_by_type == "cube":
-            return f" GROUP BY CUBE ({col_refs})"
+            return (
+                self._build_clause(
+                    "GROUP BY",
+                    "GROUP BY",
+                    f"CUBE ({col_refs})",
+                ),
+                [],
+            )
 
         if self._group_by_type == "grouping_sets":
             gr_sets = (
@@ -235,9 +275,16 @@ class select(AbstractQuery):
             )
 
             sets_sql: str = ", ".join(gr_sets)
-            return f" GROUP BY GROUPING SETS ({sets_sql})"
+            return (
+                self._build_clause(
+                    "GROUP BY",
+                    "GROUP BY",
+                    f"GROUPING SETS ({sets_sql})",
+                ),
+                [],
+            )
 
-        return f" GROUP BY {col_refs}"
+        return self._build_clause("GROUP BY", "GROUP BY", col_refs), []
 
     @staticmethod
     def _extract_col_set(col_set: tuple[Column, ...]) -> str:
