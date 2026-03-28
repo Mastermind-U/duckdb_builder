@@ -1,5 +1,5 @@
 [project]
-name = "SQLFusion"
+name = "sql_fusion"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -21,7 +21,10 @@ default-groups = ["linters", "test"]
 
 [dependency-groups]
 linters = ["mypy>=1.19.1", "ruff>=0.15.8"]
-test = ["pytest>=9.0.2"]
+test = [
+    "duckdb>=1.5.1",
+    "pytest>=9.0.2",
+]
 
 
 [tool.mypy]
