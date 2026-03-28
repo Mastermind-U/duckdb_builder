@@ -20,6 +20,7 @@ class update(AbstractQuery):
             raise ValueError("No values provided for update")
 
         table = self._get_table()
+        with_sql, with_params = self._build_with_clause()
         table_alias = table.get_alias()
         assignments: list[str] = []
         params: list[Any] = []
@@ -38,7 +39,7 @@ class update(AbstractQuery):
                 params.append(value)
 
         query = (
-            f'UPDATE "{table.get_table_name()}" '  # noqa: S608
+            f'{with_sql}UPDATE "{table.get_table_name()}" '  # noqa: S608
             f'AS "{table_alias}" '
             f"SET {', '.join(assignments)}"
         )
@@ -48,4 +49,4 @@ class update(AbstractQuery):
             query += f" WHERE {where_sql}"
             params.extend(where_params)
 
-        return query, tuple(params)
+        return query, tuple(with_params + params)

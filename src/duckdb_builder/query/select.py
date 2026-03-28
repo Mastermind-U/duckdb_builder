@@ -26,6 +26,8 @@ class select(AbstractQuery):
 
     def build_query(self) -> tuple[str, tuple[Any, ...]]:
         params: list[Any] = []
+        with_sql, with_params = self._build_with_clause()
+        params.extend(with_params)
         table = self._get_table()
 
         if not self._columns:
@@ -48,7 +50,7 @@ class select(AbstractQuery):
         distinct_part = "DISTINCT " if self._distinct else ""
         table_sql, table_params = table.to_sql()
         query: str = (
-            f"SELECT {distinct_part}{col_part} "  # noqa: S608
+            f"{with_sql}SELECT {distinct_part}{col_part} "  # noqa: S608
             f"FROM {table_sql} "
             f'AS "{table.get_alias()}"'
         )

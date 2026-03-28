@@ -27,6 +27,7 @@ class insert(AbstractQuery):
         if not self._values:
             raise ValueError("No values provided for insert")
         table = self._get_table()
+        with_sql, with_params = self._build_with_clause()
 
         columns = list(self._values.keys())
         col_names = ", ".join(f'"{col}"' for col in columns)
@@ -43,8 +44,8 @@ class insert(AbstractQuery):
             insert_stmnt += " OR IGNORE"
 
         query = (
-            f'{insert_stmnt} INTO "{table.get_table_name()}" '
+            f'{with_sql}{insert_stmnt} INTO "{table.get_table_name()}" '
             f"({col_names}) VALUES ({placeholders})"
         )
 
-        return query, params
+        return query, tuple(with_params) + params

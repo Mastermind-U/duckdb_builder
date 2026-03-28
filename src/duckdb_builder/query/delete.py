@@ -24,11 +24,12 @@ class delete(AbstractQuery):
 
     def build_query(self) -> tuple[str, tuple[Any, ...]]:
         table = self._get_table()
+        with_sql, with_params = self._build_with_clause()
         query = (
-            f'DELETE FROM "{table.get_table_name()}" '  # noqa: S608
+            f'{with_sql}DELETE FROM "{table.get_table_name()}" '  # noqa: S608
             f'AS "{table.get_alias()}"'
         )
-        params: list[Any] = []
+        params: list[Any] = list(with_params)
 
         if self._where_condition:
             where_sql, where_params = self._where_condition.to_sql()
