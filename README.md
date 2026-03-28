@@ -1,2 +1,2 @@
-# duckdb_builder
-DuckDB Query builder
+# SQLFuser
+SQLFuser Query builder
