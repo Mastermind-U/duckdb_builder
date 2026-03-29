@@ -37,6 +37,7 @@ That makes it easy to plug into your own connection layer.
 - automatic table aliases
 - composable conditions with `AND`, `OR`, and `NOT`
 - joins, subqueries, and CTEs
+- ordering, joins, subqueries, and CTEs
 - aggregate and custom SQL functions through `func`
 - backend-specific SQL rewrites through compile expressions
 
@@ -377,6 +378,7 @@ If no columns are provided, the builder emits `SELECT *`.
 | `group_by_grouping_sets(*column_sets)` | Add `GROUPING SETS` | Requires at least one set. Empty tuples become `()`. |
 | `having(*conditions)` | Add a `HAVING` clause | Requires grouping. |
 | `having_by(**kwargs)` | Add equality-based `HAVING` filters | Requires grouping. |
+| `order_by(*columns, descending=False)` | Add `ORDER BY` | Repeated calls merge columns. `descending=True` applies `DESC`. |
 
 ### `insert(table, or_replace=False, or_ignore=False)`
 

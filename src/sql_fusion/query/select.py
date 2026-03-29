@@ -19,6 +19,10 @@ class select(AbstractQuery):
         self._group_by_columns: tuple[Column, ...] = ()
         self._group_by_type: str = "normal"
         self._grouping_sets: tuple[tuple[Column, ...], ...] = ()
+        self._order_by_columns: tuple[
+            tuple[Column | Alias | FunctionCall, bool],
+            ...,
+        ] = ()
         self._joins: list[
             tuple[str, Table, Condition | None]
         ] = []  # (join_type, table, condition or None for CROSS JOIN)
@@ -94,6 +98,29 @@ class select(AbstractQuery):
                 self._build_clause("HAVING", "HAVING", having_sql),
             )
             params.extend(having_params)
+
+        if self._order_by_columns:
+            order_parts: list[str] = []
+            for col, descending in self._order_by_columns:
+                if isinstance(col, FunctionCall):
+                    col_sql, col_params = col.to_sql()
+                    params.extend(col_params)
+                elif isinstance(col, Alias):
+                    col_sql = col.to_sql()
+                else:
+                    col_sql = f'"{col.table_alias}"."{col.name}"'
+
+                if descending:
+                    col_sql = f"{col_sql} DESC"
+                order_parts.append(col_sql)
+
+            query_parts.append(
+                self._build_clause(
+                    "ORDER BY",
+                    "ORDER BY",
+                    ", ".join(order_parts),
+                ),
+            )
 
         if self._limit is not None:
             query_parts.append(
@@ -235,6 +262,20 @@ class select(AbstractQuery):
             raise ValueError("OFFSET must be non-negative")
         qs = copy(self)
         qs._offset = n
+        return qs
+
+    def order_by(
+        self,
+        *columns: Column | Alias | FunctionCall,
+        descending: bool = False,
+    ) -> Self:
+        if not columns:
+            raise ValueError("order_by() requires at least one column")
+
+        qs = copy(self)
+        qs._order_by_columns = self._order_by_columns + tuple(
+            (column, descending) for column in columns
+        )
         return qs
 
     def distinct(self) -> Self:
