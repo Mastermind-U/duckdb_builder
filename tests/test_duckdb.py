@@ -283,6 +283,39 @@ def test_complex_join_filter(duckdb_db: Any) -> None:
     ]
 
 
+def test_self_join_with_generated_aliases(duckdb_db: Any) -> None:
+    duckdb_db.execute(
+        """
+        CREATE TABLE xxx (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER
+        )
+        """,
+    )
+    duckdb_db.executemany(
+        "INSERT INTO xxx VALUES (?, ?)",
+        [
+            (1, None),
+            (2, 1),
+            (3, 1),
+        ],
+    )
+
+    left = Table("xxx")
+    right = Table("xxx")
+    query, params = (
+        select(left.id, right.id)
+        .from_(left)
+        .join(right, left.parent_id == right.id)
+        .order_by(left.id)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+
+    assert rows == [(2, 1), (3, 1)]
+
+
 def test_complex_subquery_filter(duckdb_db: Any) -> None:
     users = Table("users")
     orders = Table("orders")

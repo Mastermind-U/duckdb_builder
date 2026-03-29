@@ -570,3 +570,24 @@ def test_join_with_where_parameterized() -> None:
         'WHERE ("a"."age" > ? AND ("a"."status" = ? AND "a"."country" = ?))'
     )
     assert params == (18, "active", "USA")
+
+
+def test_self_join_uses_generated_aliases() -> None:
+    """Test joining the same table name twice gets distinct aliases."""
+    left = Table("xxx")
+    right = Table("xxx")
+
+    q = (
+        select(left.id, right.id)
+        .from_(left)
+        .join(right, left.parent_id == right.id)
+    )
+    sql, params = q.build_query()
+
+    assert sql == (
+        'SELECT "a"."id", "b"."id" '
+        'FROM "xxx" AS "a" '
+        'INNER JOIN "xxx" AS "b" '
+        'ON "a"."parent_id" = "b"."id"'
+    )
+    assert params == ()
