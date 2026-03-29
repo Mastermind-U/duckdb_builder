@@ -8,9 +8,7 @@ from sql_fusion import Table, func, select, update
 def test_update_set_returns_sql() -> None:
     table = Table("users")
     query, params = update(table).set(name="Alice", status="active").compile()
-    assert (
-        query == 'UPDATE "users" AS "a" SET "name" = ?, "status" = ?'
-    )
+    assert query == 'UPDATE "users" AS "a" SET "name" = ?, "status" = ?'
     assert params == ("Alice", "active")
 
 
@@ -20,8 +18,7 @@ def test_update_set_method_merges_calls() -> None:
         update(table).set(id=2).set(name="Carol", status="pending").compile()
     )
     assert query == (
-        'UPDATE "users" AS "a" '
-        'SET "id" = ?, "name" = ?, "status" = ?'
+        'UPDATE "users" AS "a" SET "id" = ?, "name" = ?, "status" = ?'
     )
     assert params == (2, "Carol", "pending")
 
@@ -35,10 +32,7 @@ def test_update_with_where_clause() -> None:
         .where(table.id == user_id)
         .compile()
     )
-    assert (
-        query
-        == 'UPDATE "users" AS "a" SET "status" = ? WHERE "a"."id" = ?'
-    )
+    assert query == 'UPDATE "users" AS "a" SET "status" = ? WHERE "a"."id" = ?'
     assert params == ("inactive", 5)
 
 
@@ -67,9 +61,7 @@ def test_update_with_subquery_in_where_clause() -> None:
 def test_update_set_column_by_column_expression() -> None:
     table = Table("users")
     query, params = update(table).set(counter=table.counter + 1).compile()
-    assert query == (
-        'UPDATE "users" AS "a" SET "counter" = "a"."counter" + ?'
-    )
+    assert query == ('UPDATE "users" AS "a" SET "counter" = "a"."counter" + ?')
     assert params == (1,)
 
 
@@ -87,6 +79,56 @@ def test_update_set_subquery_expression() -> None:
     assert query == (
         'UPDATE "users" AS "a" '
         'SET "total" = (SELECT MAX("b"."total") '
+        'FROM "orders" AS "b" '
+        'WHERE "b"."user_id" = "a"."id")'
+    )
+    assert params == ()
+
+
+def test_update_set_subquery_expression_with_params() -> None:
+    users = Table("users")
+    orders = Table("orders")
+    subquery = (
+        select(func.max(orders.total))
+        .from_(orders)
+        .where(orders.user_id == users.id)
+        .where(orders.status == "completed")
+    )
+
+    query, params = update(users).set(total=subquery).compile()
+
+    assert query == (
+        'UPDATE "users" AS "a" '
+        'SET "total" = (SELECT MAX("b"."total") '
+        'FROM "orders" AS "b" '
+        'WHERE ("b"."user_id" = "a"."id" AND "b"."status" = ?))'
+    )
+    assert params == ("completed",)
+
+
+def test_update_set_multiple_subquery_expressions() -> None:
+    users = Table("users")
+    orders = Table("orders")
+
+    max_total = (
+        select(func.max(orders.total))
+        .from_(orders)
+        .where(orders.user_id == users.id)
+    )
+    order_count = (
+        select(func.count("*")).from_(orders).where(orders.user_id == users.id)
+    )
+
+    query, params = (
+        update(users).set(total=max_total, order_count=order_count).compile()
+    )
+
+    assert query == (
+        'UPDATE "users" AS "a" '
+        'SET "total" = (SELECT MAX("b"."total") '
+        'FROM "orders" AS "b" '
+        'WHERE "b"."user_id" = "a"."id"), '
+        '"order_count" = (SELECT COUNT(*) '
         'FROM "orders" AS "b" '
         'WHERE "b"."user_id" = "a"."id")'
     )

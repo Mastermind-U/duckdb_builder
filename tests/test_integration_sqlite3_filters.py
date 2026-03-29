@@ -328,6 +328,78 @@ def test_update_with_subquery_in_set_clause(
     assert rows == [(1, 11), (2, 0), (3, 5)]
 
 
+def test_update_with_multiple_subqueries_in_set_clause(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    sqlite_db.execute(
+        """
+        CREATE TABLE target_rows (
+            id INTEGER PRIMARY KEY,
+            group_id INTEGER NOT NULL,
+            max_x INTEGER NOT NULL,
+            source_count INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """,
+    )
+    sqlite_db.execute(
+        """
+        CREATE TABLE source_rows (
+            id INTEGER PRIMARY KEY,
+            group_id INTEGER NOT NULL,
+            xxx INTEGER NOT NULL
+        )
+        """,
+    )
+    sqlite_db.executemany(
+        "INSERT INTO target_rows VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (1, 10, 0, 0, 1, 1),
+            (2, 10, 0, 0, 1, 2),
+            (3, 20, 0, 0, 1, 1),
+        ],
+    )
+    sqlite_db.executemany(
+        "INSERT INTO source_rows VALUES (?, ?, ?)",
+        [
+            (1, 10, 7),
+            (2, 10, 11),
+            (3, 20, 5),
+            (4, 20, 8),
+        ],
+    )
+    sqlite_db.commit()
+
+    target = Table("target_rows")
+    source = Table("source_rows")
+    max_x = (
+        select(func.max(source.xxx))
+        .from_(source)
+        .where(source.group_id == target.group_id)
+    )
+    source_count = (
+        select(func.count("*"))
+        .from_(source)
+        .where(source.group_id == target.group_id)
+    )
+    query, params = (
+        update(target)
+        .set(max_x=max_x, source_count=source_count)
+        .where(target.created_at == target.updated_at)
+        .compile()
+    )
+    _fetch_rows(sqlite_db, query, params)
+
+    rows = _fetch_rows(
+        sqlite_db,
+        "SELECT id, max_x, source_count FROM target_rows ORDER BY id",
+        (),
+    )
+
+    assert rows == [(1, 11, 2), (2, 0, 0), (3, 8, 2)]
+
+
 def test_delete_user_row(sqlite_db: sqlite3.Connection) -> None:
     users = Table("users")
 
