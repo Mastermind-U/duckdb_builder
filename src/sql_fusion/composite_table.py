@@ -52,6 +52,72 @@ class ComparableExpression:
     def get_ref(self) -> str:
         raise NotImplementedError()
 
+    def _binary_expression(
+        self,
+        operator: str,
+        other: Any,
+        *,
+        reverse: bool = False,
+    ) -> BinaryExpression:
+        if reverse:
+            return BinaryExpression(other, operator, self)
+        return BinaryExpression(self, operator, other)
+
+    def __add__(self, other: Any) -> BinaryExpression:
+        return self._binary_expression("+", other)
+
+    def __radd__(self, other: Any) -> BinaryExpression:
+        return self._binary_expression("+", other, reverse=True)
+
+    def __sub__(self, other: Any) -> BinaryExpression:
+        return self._binary_expression("-", other)
+
+    def __rsub__(self, other: Any) -> BinaryExpression:
+        return self._binary_expression("-", other, reverse=True)
+
+    def __mul__(self, other: Any) -> BinaryExpression:
+        return self._binary_expression("*", other)
+
+    def __rmul__(self, other: Any) -> BinaryExpression:
+        return self._binary_expression("*", other, reverse=True)
+
+    def __truediv__(self, other: Any) -> BinaryExpression:
+        return self._binary_expression("/", other)
+
+    def __rtruediv__(self, other: Any) -> BinaryExpression:
+        return self._binary_expression("/", other, reverse=True)
+
+
+class BinaryExpression(ComparableExpression):
+    def __init__(self, left: Any, operator: str, right: Any) -> None:
+        self.left: Any = left
+        self.operator: str = operator
+        self.right: Any = right
+
+    @staticmethod
+    def _render_operand(operand: Any) -> tuple[str, tuple[Any, ...]]:
+        if isinstance(operand, BinaryExpression):
+            sql, params = operand.to_sql()
+            return f"({sql})", params
+        if isinstance(operand, FunctionCall):
+            return operand.to_sql()
+        if isinstance(operand, Column | Alias):
+            return operand.get_ref(), tuple()
+        if isinstance(operand, ComparableExpression):
+            return operand.get_ref(), tuple()
+        return "?", (operand,)
+
+    def to_sql(self) -> tuple[str, tuple[Any, ...]]:
+        left_sql, left_params = self._render_operand(self.left)
+        right_sql, right_params = self._render_operand(self.right)
+        return (
+            f"{left_sql} {self.operator} {right_sql}",
+            left_params + right_params,
+        )
+
+    def get_ref(self) -> str:
+        return self.to_sql()[0]
+
 
 class Condition:
     def __init__(  # noqa: PLR0913
@@ -72,6 +138,14 @@ class Condition:
         self.right: Condition | None = right
         self.negated: bool = negated
 
+    @staticmethod
+    def _render_expression(
+        value: ComparableExpression | FunctionCall,
+    ) -> tuple[str, tuple[Any, ...]]:
+        if isinstance(value, (BinaryExpression, FunctionCall)):
+            return value.to_sql()
+        return value.get_ref(), tuple()
+
     def __and__(self, other: Condition) -> Condition:
         return Condition(is_and=True, left=self, right=other)
 
@@ -83,7 +157,7 @@ class Condition:
         result.negated = not self.negated
         return result
 
-    def to_sql(self) -> tuple[str, tuple[Any, ...]]:  # noqa: PLR0911
+    def to_sql(self) -> tuple[str, tuple[Any, ...]]:
         def apply_negation(
             sql: str,
             params: tuple[Any, ...],
@@ -104,63 +178,25 @@ class Condition:
         if not self.column:
             return apply_negation("", tuple())
 
-        if isinstance(self.column, FunctionCall):
-            func_sql, func_params = self.column.to_sql()
-            operator_class = self.operator
-            if operator_class is None:
-                return apply_negation(func_sql, func_params)
-
-            if isinstance(self.value, FunctionCall):
-                value_sql, value_params = self.value.to_sql()
-                sql, op_params = operator_class(func_sql).to_sql_ref(
-                    value_sql,
-                )
-                return apply_negation(
-                    sql,
-                    func_params + value_params + op_params,
-                )
-
-            if isinstance(self.value, ComparableExpression):
-                sql, op_params = operator_class(func_sql).to_sql_ref(
-                    self.value.get_ref(),
-                )
-                return apply_negation(sql, func_params + op_params)
-
-            if _is_query_like(self.value):
-                subquery_sql, subquery_params = self.value.build_query()
-                return apply_negation(
-                    f"{func_sql} {operator_class.sql_symbol} ({subquery_sql})",
-                    func_params + subquery_params,
-                )
-
-            sql, op_params = operator_class(func_sql).to_sql(self.value)
-            return apply_negation(sql, func_params + op_params)
-
-        col_ref: str = self.column.get_ref()
+        col_ref, col_params = self._render_expression(self.column)
         operator_class = self.operator
         if operator_class is None:
-            return apply_negation(col_ref, tuple())
+            return apply_negation(col_ref, col_params)
 
-        if isinstance(self.value, FunctionCall):
-            value_sql, value_params = self.value.to_sql()
+        if isinstance(self.value, (ComparableExpression, FunctionCall)):
+            value_sql, value_params = self._render_expression(self.value)
             sql, op_params = operator_class(col_ref).to_sql_ref(value_sql)
-            return apply_negation(sql, value_params + op_params)
-
-        if isinstance(self.value, ComparableExpression):
-            sql, op_params = operator_class(col_ref).to_sql_ref(
-                self.value.get_ref(),
-            )
-            return apply_negation(sql, op_params)
+            return apply_negation(sql, col_params + value_params + op_params)
 
         if _is_query_like(self.value):
             subquery_sql, subquery_params = self.value.build_query()
             return apply_negation(
                 f"{col_ref} {operator_class.sql_symbol} ({subquery_sql})",
-                subquery_params,
+                col_params + subquery_params,
             )
 
         sql, op_params = operator_class(col_ref).to_sql(self.value)
-        return apply_negation(sql, op_params)
+        return apply_negation(sql, col_params + op_params)
 
 
 class Alias(ComparableExpression):

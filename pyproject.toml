@@ -21,10 +21,7 @@ default-groups = ["linters", "test"]
 
 [dependency-groups]
 linters = ["mypy>=1.19.1", "ruff>=0.15.8"]
-test = [
-    "duckdb>=1.5.1",
-    "pytest>=9.0.2",
-]
+test = ["duckdb>=1.5.1", "pytest>=9.0.2"]
 
 
 [tool.mypy]
@@ -127,7 +124,7 @@ unfixable = [
 ignore-variadic-names = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*.py" = ["S101"]
+"tests/*.py" = ["S101", "PLR2004"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15
