@@ -146,23 +146,6 @@ def _order_by_second_column_desc_limit_two(
     return f"{sql} ORDER BY 2 DESC LIMIT 2", params
 
 
-def _duckdb_update_set_unqualified(
-    sql: str,
-    params: tuple[Any, ...],
-) -> tuple[str, tuple[Any, ...]]:
-    qualified_ref = '"a".'
-    before_set, after_set = sql.split(" SET ", 1)
-    if " WHERE " in after_set:
-        set_clause, tail = after_set.split(" WHERE ", 1)
-        return (
-            f"{before_set} SET {set_clause.replace(qualified_ref, '')} "
-            f"WHERE {tail}",
-            params,
-        )
-
-    return f"{before_set} SET {after_set.replace(qualified_ref, '')}", params
-
-
 def test_complex_user_filter(duckdb_db: Any) -> None:
     users = Table("users")
     query, params = (
@@ -590,7 +573,6 @@ def test_update_user_row(duckdb_db: Any) -> None:
         update(users)
         .set(status="active", age=29)
         .where(users.id == UPDATED_USER_ID)
-        .compile_expression(_duckdb_update_set_unqualified)
         .compile()
     )
     _fetch_rows(duckdb_db, query, params)
@@ -640,7 +622,6 @@ def test_update_with_all_binary_expression_operators(
             & (2 * counters.mul_value == 20)
             & (100 / counters.div_value == 10),
         )
-        .compile_expression(_duckdb_update_set_unqualified)
         .compile()
     )
     _fetch_rows(duckdb_db, query, params)

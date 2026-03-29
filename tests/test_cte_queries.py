@@ -150,7 +150,7 @@ def test_clause_comments_work_on_update_clauses() -> None:
 
     assert query == (
         "/* debug */\n"
-        'UPDATE "users" AS "a" SET /*+ SeqScan (a) */\n"a"."status" = ?'
+        'UPDATE "users" AS "a" SET /*+ SeqScan (a) */\n"status" = ?'
     )
     assert params == ("inactive",)
 

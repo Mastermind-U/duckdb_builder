@@ -31,7 +31,7 @@ class update(AbstractQuery):
         params: list[Any] = []
 
         for column_name, value in self._values.items():
-            column_ref = f'"{table_alias}"."{column_name}"'
+            column_ref = f'"{column_name}"'
 
             if isinstance(value, Column):
                 assignments.append(f"{column_ref} = {value.get_ref()}")

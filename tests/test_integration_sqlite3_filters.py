@@ -87,23 +87,6 @@ def _fetch_rows(
     return connection.execute(sql, params).fetchall()
 
 
-def _sqlite_update_set_unqualified(
-    sql: str,
-    params: tuple[Any, ...],
-) -> tuple[str, tuple[Any, ...]]:
-    qualified_ref = '"a".'
-    before_set, after_set = sql.split(" SET ", 1)
-    if " WHERE " in after_set:
-        set_clause, tail = after_set.split(" WHERE ", 1)
-        return (
-            f"{before_set} SET {set_clause.replace(qualified_ref, '')} "
-            f"WHERE {tail}",
-            params,
-        )
-
-    return f"{before_set} SET {after_set.replace(qualified_ref, '')}", params
-
-
 def test_complex_user_filter(sqlite_db: sqlite3.Connection) -> None:
     users = Table("users")
     query, params = (
@@ -214,7 +197,6 @@ def test_update_user_row(sqlite_db: sqlite3.Connection) -> None:
         update(users)
         .set(status="active", age=29)
         .where(users.id == UPDATED_USER_ID)
-        .compile_expression(_sqlite_update_set_unqualified)
         .compile()
     )
     _fetch_rows(sqlite_db, query, params)
@@ -263,9 +245,8 @@ def test_update_with_all_binary_expression_operators(
             (1 + counters.add_value == 11)
             & (20 - counters.sub_value == 10)
             & (2 * counters.mul_value == 20)
-            & (100 / counters.div_value == 10)
+            & (100 / counters.div_value == 10),
         )
-        .compile_expression(_sqlite_update_set_unqualified)
         .compile()
     )
     _fetch_rows(sqlite_db, query, params)

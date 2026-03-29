@@ -9,7 +9,7 @@ def test_update_set_returns_sql() -> None:
     table = Table("users")
     query, params = update(table).set(name="Alice", status="active").compile()
     assert (
-        query == 'UPDATE "users" AS "a" SET "a"."name" = ?, "a"."status" = ?'
+        query == 'UPDATE "users" AS "a" SET "name" = ?, "status" = ?'
     )
     assert params == ("Alice", "active")
 
@@ -21,7 +21,7 @@ def test_update_set_method_merges_calls() -> None:
     )
     assert query == (
         'UPDATE "users" AS "a" '
-        'SET "a"."id" = ?, "a"."name" = ?, "a"."status" = ?'
+        'SET "id" = ?, "name" = ?, "status" = ?'
     )
     assert params == (2, "Carol", "pending")
 
@@ -37,7 +37,7 @@ def test_update_with_where_clause() -> None:
     )
     assert (
         query
-        == 'UPDATE "users" AS "a" SET "a"."status" = ? WHERE "a"."id" = ?'
+        == 'UPDATE "users" AS "a" SET "status" = ? WHERE "a"."id" = ?'
     )
     assert params == ("inactive", 5)
 
@@ -55,7 +55,7 @@ def test_update_with_subquery_in_where_clause() -> None:
         .compile()
     )
     assert query == (
-        'UPDATE "users" AS "a" SET "a"."status" = ? '
+        'UPDATE "users" AS "a" SET "status" = ? '
         'WHERE "a"."id" IN '
         '(SELECT "b"."user_id" '
         'FROM "orders" AS "b" '
@@ -68,7 +68,7 @@ def test_update_set_column_by_column_expression() -> None:
     table = Table("users")
     query, params = update(table).set(counter=table.counter + 1).compile()
     assert query == (
-        'UPDATE "users" AS "a" SET "a"."counter" = "a"."counter" + ?'
+        'UPDATE "users" AS "a" SET "counter" = "a"."counter" + ?'
     )
     assert params == (1,)
 
