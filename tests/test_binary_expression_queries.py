@@ -1,32 +1,22 @@
 """Tests for arithmetic SQL expressions."""
 
-from typing import Iterator
-
-import pytest
-
 from sql_fusion import Table
-
-
-@pytest.fixture(autouse=True)
-def reset_table_alias_counter() -> Iterator[None]:
-    """Reset Table alias counter before each test."""
-    Table.reset_alias_counter()
-    yield
-    Table.reset_alias_counter()
+from sql_fusion.composite_table import AliasRegistry
 
 
 def test_column_arithmetic_operators_render_sql() -> None:
     """Test that arithmetic operators render SQL and params correctly."""
     users = Table("users")
+    reg = AliasRegistry()
 
-    add_sql, add_params = (users.counter + 1).to_sql()
-    sub_sql, sub_params = (users.counter - 1).to_sql()
-    mul_sql, mul_params = (users.counter * 2).to_sql()
-    div_sql, div_params = (users.counter / 2).to_sql()
-    radd_sql, radd_params = (1 + users.counter).to_sql()
-    rsub_sql, rsub_params = (1 - users.counter).to_sql()
-    rmul_sql, rmul_params = (2 * users.counter).to_sql()
-    rdiv_sql, rdiv_params = (2 / users.counter).to_sql()
+    add_sql, add_params = (users.counter + 1).to_sql(reg)
+    sub_sql, sub_params = (users.counter - 1).to_sql(reg)
+    mul_sql, mul_params = (users.counter * 2).to_sql(reg)
+    div_sql, div_params = (users.counter / 2).to_sql(reg)
+    radd_sql, radd_params = (1 + users.counter).to_sql(reg)
+    rsub_sql, rsub_params = (1 - users.counter).to_sql(reg)
+    rmul_sql, rmul_params = (2 * users.counter).to_sql(reg)
+    rdiv_sql, rdiv_params = (2 / users.counter).to_sql(reg)
 
     assert add_sql == '"a"."counter" + ?'
     assert add_params == (1,)
@@ -46,12 +36,15 @@ def test_column_arithmetic_operators_render_sql() -> None:
     assert rdiv_params == (2,)
 
 
-def test_nested_arithmetic_expression_keeps_parentheses_and_param_order() -> None:
+def test_nested_arithmetic_expression_keeps_parentheses_and_param_order() -> (
+    None
+):
     """Test nested arithmetic expressions keep grouping and parameter order."""
     users = Table("users")
+    reg = AliasRegistry()
 
     expr = (users.counter + 1) * (users.score - 2)
-    sql, params = expr.to_sql()
+    sql, params = expr.to_sql(reg)
 
     assert sql == '("a"."counter" + ?) * ("a"."score" - ?)'
     assert params == (1, 2)

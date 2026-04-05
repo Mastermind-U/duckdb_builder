@@ -4,6 +4,7 @@ from typing import Any, Self
 from sql_fusion.composite_table import (
     AbstractQuery,
     Alias,
+    AliasRegistry,
     Column,
     Condition,
     FunctionCall,
@@ -30,11 +31,20 @@ class select(AbstractQuery):
         self._offset: int | None = None
         self._distinct: bool = False
 
-    def build_query(self) -> tuple[str, tuple[Any, ...]]:  # noqa: PLR0912
+    def build_query(  # noqa: C901, PLR0912, PLR0915
+        self,
+        alias_registry: AliasRegistry | None = None,
+    ) -> tuple[str, tuple[Any, ...]]:
+        registry = alias_registry or self._alias_registry
         params: list[Any] = []
-        with_sql, with_params = self._build_with_clause()
+        with_sql, with_params = self._build_with_clause(registry)
         params.extend(with_params)
         table = self._get_table()
+        table_sql, table_params, alias = self._prepare_table_entry(
+            table,
+            registry,
+        )
+        joins_data = self._prepare_join_entries(registry)
 
         if not self._columns:
             col_part: str = "*"
@@ -44,19 +54,21 @@ class select(AbstractQuery):
             for col in self._columns:
                 if isinstance(col, FunctionCall):
                     # Handle function calls
-                    func_sql, func_params = col.to_sql(include_alias=True)
+                    func_sql, func_params = col.to_sql(
+                        registry,
+                        include_alias=True,
+                    )
                     col_parts.append(func_sql)
                     params.extend(func_params)
                 elif isinstance(col, Alias):
-                    col_parts.append(col.to_sql())
+                    col_parts.append(col.to_sql(registry))
                 else:
-                    # Handle regular columns
-                    col_parts.append(f'"{col.table_alias}"."{col.name}"')
+                    # Handle regular columns from any table in scope.
+                    col_parts.append(col.get_ref(registry))
 
             col_part = ", ".join(col_parts)
 
         distinct_part = "SELECT DISTINCT" if self._distinct else "SELECT"
-        table_sql, table_params = table.to_sql()
         query_parts: list[str] = []
         if with_sql:
             query_parts.append(with_sql)
@@ -67,19 +79,22 @@ class select(AbstractQuery):
             self._build_clause(
                 "FROM",
                 "FROM",
-                f'{table_sql} AS "{table.get_alias()}"',
+                f'{table_sql} AS "{alias.name}"',
             ),
         )
         params.extend(table_params)
 
         # Add JOIN clauses
-        if self._joins:
-            joins_sql, joins_params = self._build_joins()
+        if joins_data:
+            joins_sql, joins_params = self._build_joins_from_entries(
+                registry,
+                joins_data,
+            )
             query_parts.append(joins_sql)
             params.extend(joins_params)
 
         if self._where_condition:
-            where_sql, where_params = self._where_condition.to_sql()
+            where_sql, where_params = self._where_condition.to_sql(registry)
             query_parts.append(self._build_clause("WHERE", "WHERE", where_sql))
             params.extend(where_params)
 
@@ -88,12 +103,14 @@ class select(AbstractQuery):
             or self._grouping_sets
             or self._group_by_type == "all"
         ):
-            group_by_sql, group_by_params = self._build_group_by_clause()
+            group_by_sql, group_by_params = self._build_group_by_clause(
+                registry,
+            )
             query_parts.append(group_by_sql)
             params.extend(group_by_params)
 
         if self._having_condition:
-            having_sql, having_params = self._having_condition.to_sql()
+            having_sql, having_params = self._having_condition.to_sql(registry)
             query_parts.append(
                 self._build_clause("HAVING", "HAVING", having_sql),
             )
@@ -103,12 +120,12 @@ class select(AbstractQuery):
             order_parts: list[str] = []
             for col, descending in self._order_by_columns:
                 if isinstance(col, FunctionCall):
-                    col_sql, col_params = col.to_sql()
+                    col_sql, col_params = col.to_sql(registry)
                     params.extend(col_params)
                 elif isinstance(col, Alias):
-                    col_sql = col.to_sql()
+                    col_sql = col.to_sql(registry)
                 else:
-                    col_sql = f'"{col.table_alias}"."{col.name}"'
+                    col_sql = col.get_ref(registry)
 
                 if descending:
                     col_sql = f"{col_sql} DESC"
@@ -137,19 +154,75 @@ class select(AbstractQuery):
             tuple(params),
         )
 
-    def _build_joins(self) -> tuple[str, list[Any]]:
+    def _prepare_table_entry(
+        self,
+        table: Table,
+        alias_registry: AliasRegistry,
+    ) -> tuple[str, tuple[Any, ...], Alias]:
+        if table._subquery is not None:  # pyright: ignore[reportPrivateUsage]
+            table_sql, table_params = table.to_sql(alias_registry)
+            alias = alias_registry.get_alias_for_table(table)
+            return table_sql, table_params, alias
+
+        alias = alias_registry.get_alias_for_table(table)
+        table_sql, table_params = table.to_sql(alias_registry)
+        return table_sql, table_params, alias
+
+    def _prepare_join_entries(
+        self,
+        alias_registry: AliasRegistry,
+    ) -> list[
+        tuple[str, Table, Condition | None, str, tuple[Any, ...], Alias]
+    ]:
+        join_entries: list[
+            tuple[str, Table, Condition | None, str, tuple[Any, ...], Alias]
+        ] = []
+
+        for join_type, join_table, condition in self._joins:
+            join_sql, join_params, alias = self._prepare_table_entry(
+                join_table,
+                alias_registry,
+            )
+            join_entries.append(
+                (
+                    join_type,
+                    join_table,
+                    condition,
+                    join_sql,
+                    join_params,
+                    alias,
+                ),
+            )
+
+        return join_entries
+
+    def _build_joins_from_entries(
+        self,
+        alias_registry: AliasRegistry,
+        join_entries: list[
+            tuple[str, Table, Condition | None, str, tuple[Any, ...], Alias]
+        ],
+    ) -> tuple[str, list[Any]]:
         """Build JOIN clauses and return SQL string and parameters."""
         joins_sql_parts: list[str] = []
         joins_params: list[Any] = []
 
-        for join_type, join_table, condition in self._joins:
-            join_sql, join_params = join_table.to_sql()
-            join_body = f'{join_sql} AS "{join_table.get_alias()}"'
+        for (
+            join_type,
+            _join_table,
+            condition,
+            join_sql,
+            join_params,
+            alias,
+        ) in join_entries:
+            join_body = f'{join_sql} AS "{alias.name}"'
             joins_params.extend(join_params)
 
             # CROSS JOIN doesn't have an ON clause
             if condition is not None:
-                condition_sql, condition_params = condition.to_sql()
+                condition_sql, condition_params = condition.to_sql(
+                    alias_registry,
+                )
                 join_body += f" ON {condition_sql}"
                 joins_params.extend(condition_params)
 
@@ -284,13 +357,16 @@ class select(AbstractQuery):
         qs._distinct = True
         return qs
 
-    def _build_group_by_clause(self) -> tuple[str, list[Any]]:
+    def _build_group_by_clause(
+        self,
+        alias_registry: AliasRegistry | None = None,
+    ) -> tuple[str, list[Any]]:
+        registry = alias_registry or self._alias_registry
         if self._group_by_type == "all":
             return self._build_clause("GROUP BY", "GROUP BY", "ALL"), []
 
         col_refs: str = ", ".join(
-            f'"{col.table_alias}"."{col.name}"'
-            for col in self._group_by_columns
+            col.get_ref(registry) for col in self._group_by_columns
         )
 
         if self._group_by_type == "rollup":
@@ -315,7 +391,9 @@ class select(AbstractQuery):
 
         if self._group_by_type == "grouping_sets":
             gr_sets = (
-                self._extract_col_set(col_set) if col_set else "()"
+                self._extract_col_set_with_registry(col_set, registry)
+                if col_set
+                else "()"
                 for col_set in self._grouping_sets
             )
 
@@ -331,9 +409,22 @@ class select(AbstractQuery):
 
         return self._build_clause("GROUP BY", "GROUP BY", col_refs), []
 
-    @staticmethod
-    def _extract_col_set(col_set: tuple[Column, ...]) -> str:
-        col_gen = [f'"{col.table_alias}"."{col.name}"' for col in col_set]
+    def _extract_col_set(self, col_set: tuple[Column, ...]) -> str:
+        return self._extract_col_set_with_registry(
+            col_set,
+            self._alias_registry,
+        )
+
+    def _extract_col_set_with_registry(
+        self,
+        col_set: tuple[Column, ...],
+        alias_registry: AliasRegistry,
+    ) -> str:
+        col_gen: list[str] = []
+
+        for col in col_set:
+            col_gen.append(col.get_ref(alias_registry))
+
         st = ", ".join(col_gen)
         return f"({st})"
 
@@ -367,12 +458,11 @@ class select(AbstractQuery):
         qs = copy(self)
         combined_condition: Condition | None = None
         table = self._get_table()
+        qs._alias_registry.get_alias_for_table(table)
 
         for key, value in kwargs.items():
-            col: Column = Column(
-                key,
-                table.get_alias(),
-            )
+            col: Column = Column(key)
+            col._attach_table(table)  # pyright: ignore[reportPrivateUsage]
             condition = Condition(
                 column=col,
                 operator=EqualOperator,

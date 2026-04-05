@@ -3,6 +3,7 @@ from typing import Any, Self
 
 from sql_fusion.composite_table import (
     AbstractQuery,
+    AliasRegistry,
     Column,
     FunctionCall,
     Table,
@@ -26,19 +27,24 @@ class delete(AbstractQuery):
 
         return self
 
-    def build_query(self) -> tuple[str, tuple[Any, ...]]:
+    def build_query(
+        self,
+        alias_registry: AliasRegistry | None = None,
+    ) -> tuple[str, tuple[Any, ...]]:
+        registry = alias_registry or self._alias_registry
         table = self._get_table()
-        with_sql, with_params = self._build_with_clause()
+        alias = registry.get_alias_for_table(table)
+        with_sql, with_params = self._build_with_clause(registry)
         from_clause = self._build_clause(
             "FROM",
             "FROM",
-            f'"{table.get_table_name()}" AS "{table.get_alias()}"',
+            f'"{table.get_name()}" AS "{alias.name}"',
         )
         query = self._build_clause("DELETE", "DELETE", from_clause)
         params: list[Any] = list(with_params)
 
         if self._where_condition:
-            where_sql, where_params = self._where_condition.to_sql()
+            where_sql, where_params = self._where_condition.to_sql(registry)
             query += f" {self._build_clause('WHERE', 'WHERE', where_sql)}"
             params.extend(where_params)
 
@@ -54,11 +60,12 @@ class delete(AbstractQuery):
 
             for col in self._returning_columns:
                 if isinstance(col, FunctionCall):
-                    func_sql, func_params = col.to_sql()
+                    func_sql, func_params = col.to_sql(registry)
                     returning_parts.append(func_sql)
                     params.extend(func_params)
                 else:
-                    returning_parts.append(f'"{col.table_alias}"."{col.name}"')
+                    alias = registry.get_alias_for_table(col.table)
+                    returning_parts.append(f'"{alias.name}"."{col.name}"')
 
             query += " " + self._build_clause(
                 "RETURNING",

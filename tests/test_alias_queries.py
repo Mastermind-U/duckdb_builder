@@ -1,18 +1,7 @@
 """Tests for SQL aliases."""
 
-from typing import Iterator
-
-import pytest
-
 from sql_fusion import Alias, Table, func, select
-
-
-@pytest.fixture(autouse=True)
-def reset_table_alias_counter() -> Iterator[None]:
-    """Reset Table alias counter before each test."""
-    Table.reset_alias_counter()
-    yield
-    Table.reset_alias_counter()
+from sql_fusion.composite_table import AliasRegistry
 
 
 def test_function_call_as_alias_in_select() -> None:
@@ -43,8 +32,9 @@ def test_alias_condition_renders_quoted_name() -> None:
     """Test Alias comparison produces a quoted identifier."""
     count_orders = Alias("count_orders")
     orders_ge = 3
+    reg = AliasRegistry()
 
-    condition_sql, params = (count_orders >= orders_ge).to_sql()
+    condition_sql, params = (count_orders >= orders_ge).to_sql(reg)
 
     assert condition_sql == '"count_orders" >= ?'
     assert params == (orders_ge,)

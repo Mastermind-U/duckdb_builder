@@ -2,6 +2,7 @@ from typing import Any, Self
 
 from sql_fusion.composite_table import (
     AbstractQuery,
+    AliasRegistry,
     BinaryExpression,
     Column,
     FunctionCall,
@@ -20,13 +21,17 @@ class update(AbstractQuery):
         self._values.update(values)
         return self
 
-    def build_query(self) -> tuple[str, tuple[Any, ...]]:
+    def build_query(
+        self,
+        alias_registry: AliasRegistry | None = None,
+    ) -> tuple[str, tuple[Any, ...]]:
         if not self._values:
             raise ValueError("No values provided for update")
 
+        registry = alias_registry or self._alias_registry
         table = self._get_table()
-        with_sql, with_params = self._build_with_clause()
-        table_alias = table.get_alias()
+        with_sql, with_params = self._build_with_clause(registry)
+        alias = registry.get_alias_for_table(table)
         assignments: list[str] = []
         params: list[Any] = []
 
@@ -34,13 +39,15 @@ class update(AbstractQuery):
             column_ref = f'"{column_name}"'
 
             if isinstance(value, Column):
-                assignments.append(f"{column_ref} = {value.get_ref()}")
+                assignments.append(
+                    f"{column_ref} = {value.get_ref(registry)}",
+                )
             elif isinstance(value, (FunctionCall, BinaryExpression)):
-                value_sql, value_params = value.to_sql()
+                value_sql, value_params = value.to_sql(registry)
                 assignments.append(f"{column_ref} = {value_sql}")
                 params.extend(value_params)
             elif isinstance(value, AbstractQuery):
-                value_sql, value_params = value.build_query()
+                value_sql, value_params = value.build_query(registry)
                 assignments.append(f"{column_ref} = ({value_sql})")
                 params.extend(value_params)
             else:
@@ -55,11 +62,11 @@ class update(AbstractQuery):
         query = self._build_clause(
             "UPDATE",
             "UPDATE",
-            f'"{table.get_table_name()}" AS "{table_alias}" {set_clause}',
+            f'"{table.get_name()}" AS "{alias.name}" {set_clause}',
         )
 
         if self._where_condition:
-            where_sql, where_params = self._where_condition.to_sql()
+            where_sql, where_params = self._where_condition.to_sql(registry)
             query += f" {self._build_clause('WHERE', 'WHERE', where_sql)}"
             params.extend(where_params)
 

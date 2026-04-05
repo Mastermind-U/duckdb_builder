@@ -1,6 +1,6 @@
 from typing import Any, Self
 
-from sql_fusion.composite_table import AbstractQuery, Table
+from sql_fusion.composite_table import AbstractQuery, AliasRegistry, Table
 
 
 class insert(AbstractQuery):
@@ -22,11 +22,15 @@ class insert(AbstractQuery):
         self._values.update(values)
         return self
 
-    def build_query(self) -> tuple[str, tuple[Any, ...]]:
+    def build_query(
+        self,
+        alias_registry: AliasRegistry | None = None,
+    ) -> tuple[str, tuple[Any, ...]]:
         if not self._values:
             raise ValueError("No values provided for insert")
+        registry = alias_registry or self._alias_registry
         table = self._get_table()
-        with_sql, with_params = self._build_with_clause()
+        with_sql, with_params = self._build_with_clause(registry)
 
         columns = list(self._values.keys())
         col_names = ", ".join(f'"{col}"' for col in columns)
@@ -45,7 +49,7 @@ class insert(AbstractQuery):
         into_clause = self._build_clause(
             "INTO",
             "INTO",
-            f'"{table.get_table_name()}" ({col_names})',
+            f'"{table.get_name()}" ({col_names})',
         )
         values_clause = self._build_clause(
             "VALUES",

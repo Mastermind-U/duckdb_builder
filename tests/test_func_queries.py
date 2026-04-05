@@ -1,18 +1,6 @@
 """Tests for SQL function calls."""
 
-from typing import Iterator
-
-import pytest
-
 from sql_fusion import Table, func, select
-
-
-@pytest.fixture(autouse=True)
-def reset_table_alias_counter() -> Iterator[None]:
-    """Reset Table alias counter before each test."""
-    Table.reset_alias_counter()
-    yield
-    Table.reset_alias_counter()
 
 
 def test_func_sum_single_column() -> None:

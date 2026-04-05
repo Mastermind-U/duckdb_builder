@@ -21,6 +21,35 @@ CompileExpression = Callable[
 ]
 
 
+class AliasRegistry:
+    """Registry for managing unique table aliases."""
+
+    def __init__(self) -> None:
+        self._counter: int = 0
+        self._mapping: dict[Table, Alias] = {}
+
+    def get_next_alias(self) -> str:
+        """Generate the next unique alias (a, b, c, ..., z, aa, ab, ...)."""
+        alias = ""
+        n = self._counter
+        while True:
+            alias = chr(ord("a") + (n % 26)) + alias
+            n //= 26
+            if n == 0:
+                break
+        self._counter += 1
+        return alias
+
+    def get_alias_for_table(self, table: Table) -> Alias:
+        if table not in self._mapping:
+            self._mapping[table] = Alias(self.get_next_alias())
+        return self._mapping[table]
+
+    def reset(self) -> None:
+        self._counter = 0
+        self._mapping.clear()
+
+
 class AbstractQuery:
     def __init__(
         self,
@@ -35,6 +64,7 @@ class AbstractQuery:
         self._compile_expressions: list[CompileExpression] = []
         self._before_clause_comments: dict[str, list[tuple[str, bool]]] = {}
         self._after_clause_comments: dict[str, list[tuple[str, bool]]] = {}
+        self._alias_registry: AliasRegistry = AliasRegistry()
 
     def _get_table(self) -> Table:
         if self._table is None:
@@ -152,12 +182,11 @@ class AbstractQuery:
         qs = copy(self)
         combined_condition: Condition | None = None
         table = self._get_table()
+        self._alias_registry.get_alias_for_table(table)
 
         for key, value in kwargs.items():
-            col: Column = Column(
-                key,
-                table.get_alias(),
-            )
+            col: Column = Column(key)
+            col._attach_table(table)  # pyright: ignore[reportPrivateUsage]
             condition = Condition(
                 column=col,
                 operator=EqualOperator,
@@ -187,15 +216,19 @@ class AbstractQuery:
 
         return qs
 
-    def _build_with_clause(self) -> tuple[str, list[Any]]:
+    def _build_with_clause(
+        self,
+        alias_registry: AliasRegistry | None = None,
+    ) -> tuple[str, list[Any]]:
         if not self._ctes:
             return "", []
 
+        registry = alias_registry or self._alias_registry
         with_parts: list[str] = []
         params: list[Any] = []
 
         for name, query in self._ctes:
-            query_sql, query_params = query.build_query()
+            query_sql, query_params = query.build_query(registry)
             with_parts.append(f'"{name}" AS ({query_sql})')
             params.extend(query_params)
 
@@ -257,7 +290,10 @@ class AbstractQuery:
             return "".join(f" {comment}\n" for comment in rendered)
         return "".join(f"{comment}\n" for comment in rendered)
 
-    def build_query(self) -> tuple[str, tuple[Any, ...]]:
+    def build_query(
+        self,
+        alias_registry: AliasRegistry | None = None,
+    ) -> tuple[str, tuple[Any, ...]]:
         raise NotImplementedError()
 
     def compile(self) -> tuple[str, tuple[Any, ...]]:
@@ -293,7 +329,7 @@ class ComparableExpression:
     def __hash__(self) -> int:
         raise TypeError(f"unhashable type: '{type(self).__name__}'")
 
-    def get_ref(self) -> str:
+    def get_ref(self, alias_registry: AliasRegistry) -> str:
         raise NotImplementedError()
 
     def _binary_expression(
@@ -339,28 +375,37 @@ class BinaryExpression(ComparableExpression):
         self.right: Any = right
 
     @staticmethod
-    def _render_operand(operand: Any) -> tuple[str, tuple[Any, ...]]:
+    def _render_operand(
+        operand: Any,
+        alias_registry: AliasRegistry,
+    ) -> tuple[str, tuple[Any, ...]]:
         if isinstance(operand, BinaryExpression):
-            sql, params = operand.to_sql()
+            sql, params = operand.to_sql(alias_registry)
             return f"({sql})", params
         if isinstance(operand, FunctionCall):
-            return operand.to_sql()
+            return operand.to_sql(alias_registry)
         if isinstance(operand, Column | Alias):
-            return operand.get_ref(), tuple()
+            return operand.get_ref(alias_registry), tuple()
         if isinstance(operand, ComparableExpression):
-            return operand.get_ref(), tuple()
+            return operand.get_ref(alias_registry), tuple()
         return "?", (operand,)
 
-    def to_sql(self) -> tuple[str, tuple[Any, ...]]:
-        left_sql, left_params = self._render_operand(self.left)
-        right_sql, right_params = self._render_operand(self.right)
+    def to_sql(
+        self,
+        alias_registry: AliasRegistry,
+    ) -> tuple[str, tuple[Any, ...]]:
+        left_sql, left_params = self._render_operand(self.left, alias_registry)
+        right_sql, right_params = self._render_operand(
+            self.right,
+            alias_registry,
+        )
         return (
             f"{left_sql} {self.operator} {right_sql}",
             left_params + right_params,
         )
 
-    def get_ref(self) -> str:
-        return self.to_sql()[0]
+    def get_ref(self, alias_registry: AliasRegistry) -> str:
+        return self.to_sql(alias_registry)[0]
 
 
 class Condition:
@@ -385,10 +430,11 @@ class Condition:
     @staticmethod
     def _render_expression(
         value: ComparableExpression | FunctionCall,
+        alias_registry: AliasRegistry,
     ) -> tuple[str, tuple[Any, ...]]:
         if isinstance(value, (BinaryExpression, FunctionCall)):
-            return value.to_sql()
-        return value.get_ref(), tuple()
+            return value.to_sql(alias_registry)
+        return value.get_ref(alias_registry), tuple()
 
     def __and__(self, other: Condition) -> Condition:
         return Condition(is_and=True, left=self, right=other)
@@ -401,7 +447,10 @@ class Condition:
         result.negated = not self.negated
         return result
 
-    def to_sql(self) -> tuple[str, tuple[Any, ...]]:
+    def to_sql(
+        self,
+        alias_registry: AliasRegistry,
+    ) -> tuple[str, tuple[Any, ...]]:
         def apply_negation(
             sql: str,
             params: tuple[Any, ...],
@@ -411,8 +460,8 @@ class Condition:
             return sql, params
 
         if self.left and self.right:
-            left_sql, left_params = self.left.to_sql()
-            right_sql, right_params = self.right.to_sql()
+            left_sql, left_params = self.left.to_sql(alias_registry)
+            right_sql, right_params = self.right.to_sql(alias_registry)
             operator_str: str = "AND" if self.is_and else "OR"
             return apply_negation(
                 f"({left_sql} {operator_str} {right_sql})",
@@ -422,18 +471,26 @@ class Condition:
         if not self.column:
             return apply_negation("", tuple())
 
-        col_ref, col_params = self._render_expression(self.column)
+        col_ref, col_params = self._render_expression(
+            self.column,
+            alias_registry,
+        )
         operator_class = self.operator
         if operator_class is None:
             return apply_negation(col_ref, col_params)
 
         if isinstance(self.value, (ComparableExpression, FunctionCall)):
-            value_sql, value_params = self._render_expression(self.value)
+            value_sql, value_params = self._render_expression(
+                self.value,
+                alias_registry,
+            )
             sql, op_params = operator_class(col_ref).to_sql_ref(value_sql)
             return apply_negation(sql, col_params + value_params + op_params)
 
         if isinstance(self.value, AbstractQuery):
-            subquery_sql, subquery_params = self.value.build_query()
+            subquery_sql, subquery_params = self.value.build_query(
+                alias_registry,
+            )
             return apply_negation(
                 f"{col_ref} {operator_class.sql_symbol} ({subquery_sql})",
                 col_params + subquery_params,
@@ -449,14 +506,14 @@ class Alias(ComparableExpression):
     def __init__(self, name: str) -> None:
         self.name: str = name
 
-    def get_ref(self) -> str:
+    def get_ref(self, alias_registry: AliasRegistry) -> str:  # noqa: ARG002
         return f'"{self.name}"'
 
     def __repr__(self) -> str:
         return f"Alias({self.name!r})"
 
-    def to_sql(self) -> str:
-        return self.get_ref()
+    def to_sql(self, alias_registry: AliasRegistry) -> str:
+        return self.get_ref(alias_registry)
 
 
 class FunctionCall(ComparableExpression):
@@ -480,8 +537,12 @@ class FunctionCall(ComparableExpression):
         result._alias = alias if isinstance(alias, Alias) else Alias(alias)
         return result
 
+    def get_alias(self) -> Alias | None:
+        return self._alias
+
     def to_sql(
         self,
+        alias_registry: AliasRegistry,
         *,
         include_alias: bool = False,
     ) -> tuple[str, tuple[Any, ...]]:
@@ -496,11 +557,11 @@ class FunctionCall(ComparableExpression):
 
         for arg in self.args:
             if isinstance(arg, Column):
-                # Column reference like "a"."id"
-                sql_args.append(f'"{arg.table_alias}"."{arg.name}"')
+                sql_args.append(arg.get_ref(alias_registry))
+
             elif isinstance(arg, FunctionCall):
                 # Nested function call
-                nested_sql, nested_params = arg.to_sql()
+                nested_sql, nested_params = arg.to_sql(alias_registry)
                 sql_args.append(nested_sql)
                 params.extend(nested_params)
             elif arg == "*":
@@ -522,7 +583,7 @@ class FunctionCall(ComparableExpression):
         args_sql = ", ".join(sql_args)
         sql = f"{self.name}({args_sql})"
         if include_alias and self._alias is not None:
-            sql = f"{sql} AS {self._alias.get_ref()}"
+            sql = f"{sql} AS {self._alias.get_ref(alias_registry)}"
         return sql, tuple(params)
 
     def __repr__(self) -> str:
@@ -564,12 +625,15 @@ func = FunctionRegistry()
 
 
 class Column(ComparableExpression):
-    def __init__(self, name: str, table_alias: str) -> None:
+    def __init__(self, name: str) -> None:
         self.name: str = name
-        self.table_alias: str = table_alias
 
-    def get_ref(self) -> str:
-        return f'"{self.table_alias}"."{self.name}"'
+    def _attach_table(self, table: Table) -> None:
+        self.table = table
+
+    def get_ref(self, alias_registry: AliasRegistry) -> str:
+        alias = alias_registry.get_alias_for_table(self.table)
+        return f'"{alias.name}"."{self.name}"'
 
     def like(self, pattern: str) -> Condition:
         return Condition(column=self, operator=LikeOperator, value=pattern)
@@ -585,12 +649,9 @@ class Column(ComparableExpression):
 
 
 class Table:
-    _alias_counter: int = 0
-
     def __init__(
         self,
         name: str | AbstractQuery,
-        alias: str | None = None,
     ) -> None:
         self._table_name: str = ""
         self._subquery: AbstractQuery | None = None
@@ -600,30 +661,19 @@ class Table:
         else:
             self._table_name = name
 
-        if alias:
-            self._alias: str = alias
-        else:
-            # Generate unique alias (a, b, c, ...)
-            # Increment the counter for each new instance
-            self._alias = chr(ord("a") + (Table._alias_counter % 26))
-            Table._alias_counter += 1
-
-    @classmethod
-    def reset_alias_counter(cls) -> None:
-        """Reset the alias counter. Useful for testing."""
-        cls._alias_counter = 0
-
-    def get_table_name(self) -> str:
+    def get_name(self) -> str:
         if self._subquery is not None:
-            return self.to_sql()[0]
+            raise ValueError("Table is a subquery, no name available")
         return self._table_name
 
-    def get_alias(self) -> str:
-        return self._alias
-
-    def to_sql(self) -> tuple[str, tuple[Any, ...]]:
+    def to_sql(
+        self,
+        alias_registry: AliasRegistry | None = None,
+    ) -> tuple[str, tuple[Any, ...]]:
         if self._subquery is not None:
-            subquery_sql, subquery_params = self._subquery.build_query()
+            subquery_sql, subquery_params = self._subquery.build_query(
+                alias_registry,
+            )
             return f"({subquery_sql})", subquery_params
 
         return f'"{self._table_name}"', tuple()
@@ -634,4 +684,6 @@ class Table:
                 f"'{type(self).__name__}' "
                 f"object has no attribute '{column_name}'",
             )
-        return Column(column_name, self._alias)
+        column = Column(column_name)
+        column._attach_table(self)  # pyright: ignore[reportPrivateUsage]
+        return column
