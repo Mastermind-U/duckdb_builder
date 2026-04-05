@@ -32,12 +32,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-groups
 
+      - name: Pack virtualenv
+        run: tar -czf uv-venv.tar.gz .venv
+
       - name: Upload virtualenv
         uses: actions/upload-artifact@v4
         with:
           name: uv-venv
-          include-hidden-files: true
-          path: .venv
+          path: uv-venv.tar.gz
           retention-days: 1
 
   mypy:
@@ -54,6 +56,9 @@ jobs:
         with:
           name: uv-venv
           path: .
+
+      - name: Unpack virtualenv
+        run: tar -xzf uv-venv.tar.gz
 
       - name: Run mypy
         run: .venv/bin/python -m mypy src tests
@@ -73,6 +78,9 @@ jobs:
           name: uv-venv
           path: .
 
+      - name: Unpack virtualenv
+        run: tar -xzf uv-venv.tar.gz
+
       - name: Check formatting
         run: .venv/bin/ruff format --check src tests
 
@@ -91,6 +99,9 @@ jobs:
           name: uv-venv
           path: .
 
+      - name: Unpack virtualenv
+        run: tar -xzf uv-venv.tar.gz
+
       - name: Run ruff
         run: .venv/bin/ruff check --output-format=github src tests
 
@@ -108,6 +119,9 @@ jobs:
         with:
           name: uv-venv
           path: .
+
+      - name: Unpack virtualenv
+        run: tar -xzf uv-venv.tar.gz
 
       - name: Run tests
         run: .venv/bin/python -m pytest -q
