@@ -60,12 +60,23 @@ pip install -e .
 ## Public API
 
 ```python
-from sql_fusion import Alias, Table, delete, func, insert, select, update
+from sql_fusion import (
+    Alias,
+    Column,
+    Table,
+    delete,
+    func,
+    insert,
+    select,
+    update,
+)
 ```
 
 ### Core Objects
 
 - `Table` represents a real table or a subquery.
+- `Column` is the reusable column object used by `Table` when you want to
+  predeclare columns.
 - `select` creates a `SELECT` builder.
 - `insert` creates an `INSERT` builder.
 - `update` creates an `UPDATE` builder.
@@ -204,6 +215,26 @@ users = Table("users", alias="u")
 
 `Table` can also wrap a subquery. In practice, you usually pass a query
 builder directly to `from_()` or `join()`, and the library wraps it for you.
+
+If you want explicit, hint-friendly columns on a table instance, pass them
+when you create it:
+
+```python
+from sql_fusion import Column, Table, select
+
+
+users = Table(
+    "users",
+    Column("id"),
+    Column("name"),
+)
+
+
+query = select(users.id, users.name).from_(users)
+```
+
+This style keeps the column list declared in one place and is verified at
+runtime when you access `users.id` / `users.name`.
 
 ### Conditions
 

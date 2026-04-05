@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from copy import copy
 from typing import Any, Callable, Self
 
@@ -652,14 +653,21 @@ class Table:
     def __init__(
         self,
         name: str | AbstractQuery,
+        *columns: Column,
     ) -> None:
         self._table_name: str = ""
         self._subquery: AbstractQuery | None = None
+        self.columns: dict[str, Column] = {}
 
         if isinstance(name, AbstractQuery):
             self._subquery = name
         else:
             self._table_name = name
+
+        if columns:
+            for col in columns:
+                col._attach_table(self)  # pyright: ignore[reportPrivateUsage]
+                self.columns[col.name] = col
 
     def get_name(self) -> str:
         if self._subquery is not None:
@@ -678,12 +686,22 @@ class Table:
 
         return f'"{self._table_name}"', tuple()
 
+    def __dir__(self) -> Iterable[str]:
+        default_dir = super().__dir__()
+        cols = list(self.columns.keys())
+        cols.extend(default_dir)
+        return cols
+
     def __getattr__(self, column_name: str) -> Column:
         if column_name.startswith("_"):
             raise AttributeError(
                 f"'{type(self).__name__}' "
                 f"object has no attribute '{column_name}'",
             )
+
+        if self.columns:
+            return self.columns[column_name]
+
         column = Column(column_name)
         column._attach_table(self)  # pyright: ignore[reportPrivateUsage]
         return column
