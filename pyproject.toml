@@ -11,6 +11,7 @@ dependencies = []
 Homepage = "https://github.com/Mastermind-U/sql_fuser"
 Documentation = "https://github.com/Mastermind-U/sql_fuser/blob/main/README.md"
 Repository = "https://github.com/Mastermind-U/sql_fuser.git"
+Source = "https://github.com/Mastermind-U/sql_fuser"
 Issues = "https://github.com/Mastermind-U/sql_fuser/issues"
 
 [project.scripts]
