@@ -10,32 +10,95 @@ permissions:
   contents: read
 
 jobs:
-  checks:
+  setup:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - &checkout
+        name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - &setup_python
+        name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.14"
 
-      - name: Install uv
-        run: python -m pip install --upgrade pip uv
+      - name: Upload virtualenv
+        uses: actions/upload-artifact@v4
+        with:
+          name: uv-venv
+          path: .venv
+          retention-minutes: 10
 
-      - name: Install dependencies
-        run: uv sync --all-groups
+  mypy:
+    needs: setup
+    runs-on: ubuntu-latest
 
-      - name: Run tests
-        run: uv run pytest -q
+    steps:
+      - *checkout
+
+      - *setup_python
+
+      - name: Download virtualenv
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-venv
+          path: .
 
       - name: Run mypy
-        run: uv run mypy src tests
+        run: .venv/bin/python -m mypy src tests
+
+  ruff-format:
+    needs: setup
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+
+      - *setup_python
+
+      - name: Download virtualenv
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-venv
+          path: .
 
       - name: Check formatting
-        run: uv run ruff format --check src tests
+        run: .venv/bin/ruff format --check src tests
+
+  ruff-check:
+    needs: setup
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+
+      - *setup_python
+
+      - name: Download virtualenv
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-venv
+          path: .
 
       - name: Run ruff
-        run: uv run ruff check --output-format=github src tests
+        run: .venv/bin/ruff check --output-format=github src tests
+
+  tests:
+    needs: setup
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+
+      - *setup_python
+
+      - name: Download virtualenv
+        uses: actions/download-artifact@v4
+        with:
+          name: uv-venv
+          path: .
+
+      - name: Run tests
+        run: .venv/bin/python -m pytest -q
