@@ -136,7 +136,9 @@ def test_complex_join_filter(sqlite_db: sqlite3.Connection) -> None:
     ]
 
 
-def test_self_join_with_generated_aliases(sqlite_db: sqlite3.Connection) -> None:
+def test_self_join_with_generated_aliases(
+    sqlite_db: sqlite3.Connection,
+) -> None:
     sqlite_db.execute(
         """
         CREATE TABLE xxx (

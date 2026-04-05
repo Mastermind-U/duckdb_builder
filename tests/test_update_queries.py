@@ -153,7 +153,7 @@ def test_update_set_ordered_subquery_expression() -> None:
         'SET "last_activity" = (SELECT "b"."created_at" '
         'FROM "posts" AS "b" '
         'ORDER BY "b"."created_at" '
-        'LIMIT 1)'
+        "LIMIT 1)"
     )
     assert params == ()
 
