@@ -1,21 +1,21 @@
 [project]
 name = "sql_fusion"
-version = "1.0.0"
-description = "Add your description here"
+version = "1.0.1"
+description = "Python query builder with a focus on composability and reusability."
 readme = "README.md"
 authors = [{ name = "Mastermind-U", email = "rex49513@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/Mastermind-U/sql_fuser"
-Documentation = "https://github.com/Mastermind-U/sql_fuser/blob/main/README.md"
-Repository = "https://github.com/Mastermind-U/sql_fuser.git"
-Source = "https://github.com/Mastermind-U/sql_fuser"
-Issues = "https://github.com/Mastermind-U/sql_fuser/issues"
+Homepage = "https://github.com/Mastermind-U/sql_fusion"
+Documentation = "https://github.com/Mastermind-U/sql_fusion/blob/main/README.md"
+Repository = "https://github.com/Mastermind-U/sql_fusion.git"
+Source = "https://github.com/Mastermind-U/sql_fusion"
+Issues = "https://github.com/Mastermind-U/sql_fusion/issues"
 
 [project.scripts]
-sql_fuser = "sql_fuser:main"
+sql_fusion = "sql_fusion:main"
 
 [build-system]
 requires = ["uv_build>=0.11.1,<0.12.0"]
