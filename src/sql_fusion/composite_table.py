@@ -511,7 +511,8 @@ class Condition:
             )
             sql, op_params = operator.to_sql_ref(subquery_sql)
             return apply_negation(
-                sql, col_params + subquery_params + op_params
+                sql,
+                col_params + subquery_params + op_params,
             )
 
         sql, op_params = operator.to_sql(self.value)
