@@ -94,3 +94,15 @@ class NotInOperator(AbstractOperator):
 
     def to_sql_ref(self, value_ref: str) -> tuple[str, tuple[Any, ...]]:
         return f"{self._col_ref} NOT IN ({value_ref})", tuple()
+
+
+class TextOperator(AbstractOperator):
+    def __init__(self, col_ref: str, sql_symbol: str) -> None:
+        super().__init__(col_ref)
+        self.sql_symbol: str = sql_symbol
+
+    def to_sql(self, value: Any) -> tuple[str, tuple[Any, ...]]:
+        return f"{self._col_ref} {self.sql_symbol} ?", (value,)
+
+    def to_sql_ref(self, value_ref: str) -> tuple[str, tuple[Any, ...]]:
+        return f"{self._col_ref} {self.sql_symbol} {value_ref}", tuple()

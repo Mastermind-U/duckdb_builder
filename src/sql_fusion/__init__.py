@@ -1,4 +1,4 @@
-from .composite_table import Alias, Column, Table, func
+from .composite_table import Alias, Column, Table, func, text_op
 from .query.delete import delete
 from .query.insert import insert
 from .query.select import select
@@ -12,5 +12,6 @@ __all__ = [
     "func",
     "insert",
     "select",
+    "text_op",
     "update",
 ]

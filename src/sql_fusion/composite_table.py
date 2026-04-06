@@ -14,12 +14,14 @@ from sql_fusion.operators import (
     LikeOperator,
     NotEqualOperator,
     NotInOperator,
+    TextOperator,
 )
 
 CompileExpression = Callable[
     [str, tuple[Any, ...]],
     tuple[str, tuple[Any, ...]],
 ]
+OperatorFactory = Callable[[str], AbstractOperator]
 
 
 class AliasRegistry:
@@ -304,7 +306,7 @@ class AbstractQuery:
 class ComparableExpression:
     def _cond(
         self,
-        operator: type[AbstractOperator],
+        operator: type[AbstractOperator] | OperatorFactory,
         other: object,
     ) -> Condition:
         return Condition(column=self, operator=operator, value=other)
@@ -413,7 +415,9 @@ class Condition:
     def __init__(  # noqa: PLR0913
         self,
         column: ComparableExpression | FunctionCall | None = None,
-        operator: type[AbstractOperator] | None = None,
+        operator: (
+            type[AbstractOperator] | AbstractOperator | OperatorFactory | None
+        ) = None,
         value: object | None = None,
         is_and: bool = True,
         left: Condition | None = None,
@@ -421,7 +425,9 @@ class Condition:
         negated: bool = False,
     ) -> None:
         self.column: ComparableExpression | FunctionCall | None = column
-        self.operator: type[AbstractOperator] | None = operator
+        self.operator: (
+            type[AbstractOperator] | AbstractOperator | OperatorFactory | None
+        ) = operator
         self.value: object | None = value
         self.is_and: bool = is_and
         self.left: Condition | None = left
@@ -436,6 +442,15 @@ class Condition:
         if isinstance(value, (BinaryExpression, FunctionCall)):
             return value.to_sql(alias_registry)
         return value.get_ref(alias_registry), tuple()
+
+    @staticmethod
+    def _resolve_operator(
+        operator: type[AbstractOperator] | AbstractOperator | OperatorFactory,
+        col_ref: str,
+    ) -> AbstractOperator:
+        if isinstance(operator, AbstractOperator):
+            return operator
+        return operator(col_ref)
 
     def __and__(self, other: Condition) -> Condition:
         return Condition(is_and=True, left=self, right=other)
@@ -476,28 +491,30 @@ class Condition:
             self.column,
             alias_registry,
         )
-        operator_class = self.operator
-        if operator_class is None:
+        operator_spec = self.operator
+        if operator_spec is None:
             return apply_negation(col_ref, col_params)
+
+        operator = self._resolve_operator(operator_spec, col_ref)
 
         if isinstance(self.value, (ComparableExpression, FunctionCall)):
             value_sql, value_params = self._render_expression(
                 self.value,
                 alias_registry,
             )
-            sql, op_params = operator_class(col_ref).to_sql_ref(value_sql)
+            sql, op_params = operator.to_sql_ref(value_sql)
             return apply_negation(sql, col_params + value_params + op_params)
 
         if isinstance(self.value, AbstractQuery):
             subquery_sql, subquery_params = self.value.build_query(
                 alias_registry,
             )
+            sql, op_params = operator.to_sql_ref(subquery_sql)
             return apply_negation(
-                f"{col_ref} {operator_class.sql_symbol} ({subquery_sql})",
-                col_params + subquery_params,
+                sql, col_params + subquery_params + op_params
             )
 
-        sql, op_params = operator_class(col_ref).to_sql(self.value)
+        sql, op_params = operator.to_sql(self.value)
         return apply_negation(sql, col_params + op_params)
 
 
@@ -623,6 +640,18 @@ class FunctionRegistry:
 
 
 func = FunctionRegistry()
+
+
+def text_op(
+    column: ComparableExpression | FunctionCall,
+    operator: str,
+    value: object,
+) -> Condition:
+    return Condition(
+        column=column,
+        operator=lambda col_ref: TextOperator(col_ref, operator),
+        value=value,
+    )
 
 
 class Column(ComparableExpression):

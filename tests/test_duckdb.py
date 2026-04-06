@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from sql_fusion import Table, delete, func, insert, select, update
+from sql_fusion import Table, delete, func, insert, select, text_op, update
 
 MIN_USER_AGE = 30
 MIN_JOIN_TOTAL = 100
@@ -253,6 +253,39 @@ def test_not_in_filter(duckdb_db: Any) -> None:
     rows = _fetch_rows(duckdb_db, query, params)
 
     assert rows == [("Dave",)]
+
+
+def test_postgres_style_array_contains_filter(duckdb_db: Any) -> None:
+    duckdb_db.execute(
+        """
+        CREATE TABLE user_tags (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            tags TEXT[] NOT NULL
+        )
+        """,
+    )
+    duckdb_db.executemany(
+        "INSERT INTO user_tags VALUES (?, ?, ?)",
+        [
+            (1, "Alice", ["coffee", "music"]),
+            (2, "Bob", ["tea"]),
+            (3, "Carol", ["coffee", "books"]),
+        ],
+    )
+
+    users = Table("user_tags")
+    query, params = (
+        select(users.name)
+        .from_(users)
+        .where(text_op(users.tags, "@>", ["coffee"]))
+        .order_by(users.name)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+
+    assert rows == [("Alice",), ("Carol",)]
 
 
 def test_complex_join_filter(duckdb_db: Any) -> None:

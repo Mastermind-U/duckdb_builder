@@ -102,6 +102,7 @@ from sql_fusion import (
     func,
     insert,
     select,
+    text,
     update,
 )
 ```
@@ -116,6 +117,7 @@ from sql_fusion import (
 - `update` creates an `UPDATE` builder.
 - `delete` creates a `DELETE` builder.
 - `func` is a dynamic SQL function registry.
+- `text_op` builds a condition with a raw SQL operator such as `@>`.
 - `Alias` represents a reusable SQL alias for aggregate expressions and
   `HAVING` conditions.
 
@@ -287,6 +289,10 @@ They also support SQL helpers:
 - `.ilike(pattern)`
 - `.in_(values)`
 - `.not_in(values)`
+- `text(column, operator, value)` for backend-specific operators such as
+  PostgreSQL array containment (`@>`).
+
+Use `|` for SQL `OR`. Python's `or` cannot be overloaded for SQL expressions.
 
 Conditions can be combined with:
 
@@ -305,6 +311,19 @@ query = (
         & ((users.status == "active") | (users.status == "pending"))
         & users.country.not_in(["DE", "FR"])
     )
+)
+```
+
+For PostgreSQL-style array containment, `text()` lets you pass the operator
+symbol directly:
+
+```python
+users = Table("users", Column("name"), Column("tags"))
+
+query = (
+    select(users.name)
+    .from_(users)
+    .where(users.name == "bob" or text_op(users.tags, "@>", ["coffee"]))
 )
 ```
 
