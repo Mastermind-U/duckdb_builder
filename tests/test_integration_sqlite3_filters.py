@@ -29,8 +29,8 @@ def sqlite_cte_materialization(
         params: tuple[Any, ...],
     ) -> tuple[str, tuple[Any, ...]]:
         for cte_name, is_materialized in materialized.items():
-            marker = "MATERIALIZED" if is_materialized else (
-                "NOT MATERIALIZED"
+            marker = (
+                "MATERIALIZED" if is_materialized else ("NOT MATERIALIZED")
             )
             sql = re.sub(
                 rf'("{re.escape(cte_name)}")\s+AS\s+\(',
@@ -210,17 +210,16 @@ def test_complex_subquery_filter(sqlite_db: sqlite3.Connection) -> None:
         select(orders.user_id).from_(orders).where_by(status="cancelled")
     )
 
-    query, params = (
+    query = (
         select(users.id, users.name)
         .from_(users)
         .where_by(status="active")
         .where(users.id.in_(completed_users))
         .where(users.id.not_in(cancelled_users))
         .where((users.age >= MIN_USER_AGE) & users.country.in_(["US", "CA"]))
-        .compile()
     )
 
-    rows = _fetch_rows(sqlite_db, query, params)
+    rows = _fetch_rows(sqlite_db, *query.compile())
 
     assert sorted(rows) == [(1, "Alice"), (3, "Carol")]
 
@@ -330,23 +329,22 @@ def test_insert_user_row(sqlite_db: sqlite3.Connection) -> None:
 def test_update_user_row(sqlite_db: sqlite3.Connection) -> None:
     users = Table("users")
 
-    query, params = (
+    query = (
         update(users)
         .set(status="active", age=29)
         .where(users.id == UPDATED_USER_ID)
-        .compile()
     )
-    _fetch_rows(sqlite_db, query, params)
+    _fetch_rows(sqlite_db, *query.compile())
 
-    rows = _fetch_rows(
-        sqlite_db,
-        "SELECT id, name, age, status FROM users WHERE id = ?",
-        (UPDATED_USER_ID,),
+    query2 = (
+        select(users.id, users.name, users.age, users.status)
+        .from_(users)
+        .where(users.id == UPDATED_USER_ID)
     )
 
-    assert rows == [
-        (UPDATED_USER_ID, "Bob", 29, "active"),
-    ]
+    rows = _fetch_rows(sqlite_db, *query2.compile())
+
+    assert rows == [(UPDATED_USER_ID, "Bob", 29, "active")]
 
 
 def test_update_with_all_binary_expression_operators(
