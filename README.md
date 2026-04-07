@@ -26,6 +26,7 @@ That makes it easy to plug into your own connection layer.
 - [Quickstart: psycopg3](#quickstart-psycopg3)
 - [Query Basics](#query-basics)
 - [Subquery Example](#subquery-example)
+- [Set Operations](#set-operations)
 - [Method Reference](#method-reference)
 - [Functions](#functions)
 - [CTEs](#ctes)
@@ -389,6 +390,94 @@ paid_orders = (
 
 query, params = select().from_(paid_orders).compile()
 ```
+
+## Set Operations
+
+SQL Fusion supports compound queries through three small wrapper classes:
+
+- `union(query1, query2, all=False, by_name=False)`
+- `intersect(q1, q2, all_=False)`
+- `except_(q1, q2, all_=False)`
+
+Each builder accepts two query objects and returns a new query that compiles to
+the matching SQL set operation.
+
+### `union(...)`
+
+```python
+users = Table("users")
+archived_users = Table("archived_users")
+
+active_users = select(users.id, users.name).from_(users).where_by(status="active")
+archived_active_users = (
+    select(archived_users.id, archived_users.name)
+    .from_(archived_users)
+    .where_by(status="active")
+)
+
+query, params = union(active_users, archived_active_users).compile()
+```
+
+Use `all=True` for `UNION ALL`:
+
+```python
+query, params = union(active_users, archived_active_users, all=True).compile()
+```
+
+Use `by_name=True` when the two result sets expose the same logical columns in
+different orders:
+
+```python
+left = select(users.id, users.name).from_(users)
+right = select(archived_users.name, archived_users.id).from_(archived_users)
+
+query, params = union(left, right, all=True, by_name=True).compile()
+```
+
+### `intersect(...)`
+
+```python
+users = Table("users")
+premium_users = Table("premium_users")
+
+active_users = select(users.id).from_(users).where_by(status="active")
+premium_active_users = (
+    select(premium_users.id).from_(premium_users).where_by(status="active")
+)
+
+query, params = intersect(active_users, premium_active_users).compile()
+```
+
+Use `all_=True` for `INTERSECT ALL`:
+
+```python
+query, params = intersect(
+    active_users,
+    premium_active_users,
+    all_=True,
+).compile()
+```
+
+### `except_(...)`
+
+```python
+users = Table("users")
+banned_users = Table("banned_users")
+
+all_users = select(users.id).from_(users)
+banned_user_ids = select(banned_users.id).from_(banned_users)
+
+query, params = except_(all_users, banned_user_ids).compile()
+```
+
+Use `all_=True` for `EXCEPT ALL`:
+
+```python
+query, params = except_(all_users, banned_user_ids, all_=True).compile()
+```
+
+These builders preserve the parameter order from left to right, so the returned
+`params` tuple can be passed directly to DB-API drivers.
 
 ### Having Example
 
