@@ -1,6 +1,6 @@
 [project]
 name = "sql_fusion"
-version = "1.2.1"
+version = "1.2.2"
 description = "Python query builder with a focus on composability and reusability."
 readme = "README.md"
 authors = [{ name = "Mastermind-U", email = "rex49513@gmail.com" }]

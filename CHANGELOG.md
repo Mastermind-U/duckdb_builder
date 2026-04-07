@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.2 - 2026-04-07
+
+### Added
+
+- Fix arguments for set operations
+
+## 1.2.1 - 2026-04-07
+
+### Added
+
+- Support for Python 3.11.
+
 ## 1.2.0 - 2026-04-07
 
 ### Added

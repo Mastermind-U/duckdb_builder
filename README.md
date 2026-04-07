@@ -411,9 +411,9 @@ query, params = select().from_(paid_orders).compile()
 
 SQL Fusion supports compound queries through three small wrapper classes:
 
-- `union(query1, query2, all=False, by_name=False)`
-- `intersect(q1, q2, all_=False)`
-- `except_(q1, q2, all_=False)`
+- `union(query1, query2, all_=False, by_name=False)`
+- `intersect(query1, query2, all_=False)`
+- `except_(query1, query2, all_=False)`
 
 Each builder accepts two query objects and returns a new query that compiles to
 the matching SQL set operation.
@@ -437,7 +437,7 @@ query, params = union(active_users, archived_active_users).compile()
 Use `all=True` for `UNION ALL`:
 
 ```python
-query, params = union(active_users, archived_active_users, all=True).compile()
+query, params = union(active_users, archived_active_users, all_=True).compile()
 ```
 
 Use `by_name=True` when the two result sets expose the same logical columns in
@@ -447,7 +447,7 @@ different orders:
 left = select(users.id, users.name).from_(users)
 right = select(archived_users.name, archived_users.id).from_(archived_users)
 
-query, params = union(left, right, all=True, by_name=True).compile()
+query, params = union(left, right, all_=True, by_name=True).compile()
 ```
 
 ### `intersect(...)`

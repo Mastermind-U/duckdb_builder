@@ -57,11 +57,11 @@ class union(_set_operation):
         self,
         query1: AbstractQuery,
         query2: AbstractQuery,
-        all: bool = False,  # noqa: A002
+        all_: bool = False,
         by_name: bool = False,
     ) -> None:
         super().__init__(query1, query2)
-        self._all = all
+        self._all = all_
         self._by_name = by_name
 
     def _operator_sql(self) -> str:

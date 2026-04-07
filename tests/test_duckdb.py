@@ -973,7 +973,7 @@ def test_union_all_by_name(duckdb_db: Any) -> None:
     query, params = union(
         left_query,
         right_query,
-        all=True,
+        all_=True,
         by_name=True,
     ).compile()
 

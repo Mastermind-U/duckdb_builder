@@ -735,7 +735,7 @@ def test_sqlite_union_all_compound_query(
     query, params = union(
         active_users,
         premium_active_users,
-        all=True,
+        all_=True,
     ).compile()
 
     rows = _fetch_rows(sqlite_db, query, params)

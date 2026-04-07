@@ -20,7 +20,7 @@ def test_union_all_by_name_compiles_with_params() -> None:
     union_query = union(
         active_query,
         archived_query,
-        all=True,
+        all_=True,
         by_name=True,
     )
     query, params = union_query.compile()
