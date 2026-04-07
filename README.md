@@ -58,6 +58,22 @@ SQL Fusion is built for the middle ground:
 
 In short, the goal is to keep the ergonomics of a lightweight builder while still covering the parts of SQL that matter in real applications.
 
+### Why not SQLAlchemy ORM or Core?
+
+SQLAlchemy is an excellent tool, but it is also a much heavier and more universal system:
+
+- it brings a larger abstraction surface than this project needs
+- it is optimized for a broad ORM and Core ecosystem, not only for a small SQL builder
+- some connectors and databases still do not have first-class SQLAlchemy integrations, which can make adoption less straightforward in mixed environments
+
+SQLAlchemy Core is closer to SQL Fusion than the full ORM, but it still carries more machinery than this project is meant to expose:
+
+- it is part of a broader ecosystem with dialects, compilation layers, and extra conventions
+- it can feel more verbose when you only want a small chainable builder
+- some connectors and databases still do not have smooth SQLAlchemy Core support, so portability can depend on the backend
+
+SQL Fusion is intentionally narrower so it can stay lightweight, easy to embed, and practical for DB-API style backends without extra complexity.
+
 ## What You Get
 
 - `SELECT`, `INSERT`, `UPDATE`, and `DELETE` builders
