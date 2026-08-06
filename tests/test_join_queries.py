@@ -134,6 +134,25 @@ def test_left_join_with_where() -> None:
     assert params == ("active",)
 
 
+def test_left_outer_join_basic() -> None:
+    """Test LEFT OUTER JOIN."""
+    users = Table("users")
+    orders = Table("orders")
+    q = select().from_(users).left_join(
+        orders,
+        users.id == orders.user_id,
+        is_outer=True,
+    )
+    sql, params = q.build_query()
+    assert sql == (
+        "SELECT * "
+        'FROM "users" AS "a" '
+        'LEFT OUTER JOIN "orders" AS "b" '
+        'ON "a"."id" = "b"."user_id"'
+    )
+    assert params == ()
+
+
 def test_right_join_basic() -> None:
     """Test basic RIGHT JOIN."""
     users = Table("users")
@@ -144,6 +163,25 @@ def test_right_join_basic() -> None:
         "SELECT * "
         'FROM "users" AS "a" '
         'RIGHT JOIN "orders" AS "b" '
+        'ON "a"."id" = "b"."user_id"'
+    )
+    assert params == ()
+
+
+def test_right_outer_join_basic() -> None:
+    """Test RIGHT OUTER JOIN."""
+    users = Table("users")
+    orders = Table("orders")
+    q = select().from_(users).right_join(
+        orders,
+        users.id == orders.user_id,
+        is_outer=True,
+    )
+    sql, params = q.build_query()
+    assert sql == (
+        "SELECT * "
+        'FROM "users" AS "a" '
+        'RIGHT OUTER JOIN "orders" AS "b" '
         'ON "a"."id" = "b"."user_id"'
     )
     assert params == ()
@@ -168,6 +206,25 @@ def test_right_join_with_where() -> None:
         'WHERE "a"."total" = ?'
     )
     assert params == (100,)
+
+
+def test_full_join_without_outer_basic() -> None:
+    """Test FULL JOIN without OUTER keyword."""
+    users = Table("users")
+    orders = Table("orders")
+    q = select().from_(users).full_join(
+        orders,
+        users.id == orders.user_id,
+        is_outer=False,
+    )
+    sql, params = q.build_query()
+    assert sql == (
+        "SELECT * "
+        'FROM "users" AS "a" '
+        'FULL JOIN "orders" AS "b" '
+        'ON "a"."id" = "b"."user_id"'
+    )
+    assert params == ()
 
 
 def test_full_outer_join_basic() -> None:

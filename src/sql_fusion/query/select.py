@@ -25,8 +25,8 @@ class select(AbstractQuery):
             ...,
         ] = ()
         self._joins: list[
-            tuple[str, Table, Condition | None]
-        ] = []  # (join_type, table, condition or None for CROSS JOIN)
+            tuple[str, Table, Condition | None, bool]
+        ] = []  # (join_type, table, condition, is_outer)
         self._limit: int | None = None
         self._offset: int | None = None
         self._distinct: bool = False
@@ -172,13 +172,29 @@ class select(AbstractQuery):
         self,
         alias_registry: AliasRegistry,
     ) -> list[
-        tuple[str, Table, Condition | None, str, tuple[Any, ...], Alias]
+        tuple[
+            str,
+            Table,
+            Condition | None,
+            bool,
+            str,
+            tuple[Any, ...],
+            Alias,
+        ]
     ]:
         join_entries: list[
-            tuple[str, Table, Condition | None, str, tuple[Any, ...], Alias]
+            tuple[
+                str,
+                Table,
+                Condition | None,
+                bool,
+                str,
+                tuple[Any, ...],
+                Alias,
+            ]
         ] = []
 
-        for join_type, join_table, condition in self._joins:
+        for join_type, join_table, condition, is_outer in self._joins:
             join_sql, join_params, alias = self._prepare_table_entry(
                 join_table,
                 alias_registry,
@@ -188,6 +204,7 @@ class select(AbstractQuery):
                     join_type,
                     join_table,
                     condition,
+                    is_outer,
                     join_sql,
                     join_params,
                     alias,
@@ -200,7 +217,15 @@ class select(AbstractQuery):
         self,
         alias_registry: AliasRegistry,
         join_entries: list[
-            tuple[str, Table, Condition | None, str, tuple[Any, ...], Alias]
+            tuple[
+                str,
+                Table,
+                Condition | None,
+                bool,
+                str,
+                tuple[Any, ...],
+                Alias,
+            ]
         ],
     ) -> tuple[str, list[Any]]:
         """Build JOIN clauses and return SQL string and parameters."""
@@ -211,6 +236,7 @@ class select(AbstractQuery):
             join_type,
             _join_table,
             condition,
+            is_outer,
             join_sql,
             join_params,
             alias,
@@ -229,7 +255,7 @@ class select(AbstractQuery):
             joins_sql_parts.append(
                 self._build_clause(
                     "JOIN",
-                    f"{join_type} JOIN",
+                    f"{join_type}{' OUTER' if is_outer else ''} JOIN",
                     join_body,
                 ),
             )
@@ -246,46 +272,52 @@ class select(AbstractQuery):
         qs._joins = self._joins.copy()
         if isinstance(table, AbstractQuery):
             table = Table(table)
-        qs._joins.append(("INNER", table, condition))
+        qs._joins.append(("INNER", table, condition, False))
         return qs
 
     def left_join(
         self,
         table: Table | AbstractQuery,
         condition: Condition,
+        *,
+        is_outer: bool = False,
     ) -> Self:
-        """Add a LEFT JOIN clause."""
+        """Add a LEFT [OUTER] JOIN clause."""
         qs = copy(self)
         qs._joins = self._joins.copy()
         if isinstance(table, AbstractQuery):
             table = Table(table)
-        qs._joins.append(("LEFT", table, condition))
+        qs._joins.append(("LEFT", table, condition, is_outer))
         return qs
 
     def right_join(
         self,
         table: Table | AbstractQuery,
         condition: Condition,
+        *,
+        is_outer: bool = False,
     ) -> Self:
-        """Add a RIGHT JOIN clause."""
+        """Add a RIGHT [OUTER] JOIN clause."""
         qs = copy(self)
         qs._joins = self._joins.copy()
         if isinstance(table, AbstractQuery):
             table = Table(table)
-        qs._joins.append(("RIGHT", table, condition))
+        qs._joins.append(("RIGHT", table, condition, is_outer))
         return qs
 
     def full_join(
         self,
         table: Table | AbstractQuery,
         condition: Condition,
+        *,
+        is_outer: bool = True,
     ) -> Self:
-        """Add a FULL OUTER JOIN clause."""
+        """Add a FULL [OUTER] JOIN clause."""
         qs = copy(self)
         qs._joins = self._joins.copy()
         if isinstance(table, AbstractQuery):
             table = Table(table)
-        qs._joins.append(("FULL OUTER", table, condition))
+        qs._joins.append(("FULL", table, condition, is_outer))
         return qs
 
     def cross_join(self, table: Table | AbstractQuery) -> Self:
@@ -294,7 +326,7 @@ class select(AbstractQuery):
         qs._joins = self._joins.copy()
         if isinstance(table, AbstractQuery):
             table = Table(table)
-        qs._joins.append(("CROSS", table, None))
+        qs._joins.append(("CROSS", table, None, False))
         return qs
 
     def semi_join(
@@ -307,7 +339,7 @@ class select(AbstractQuery):
         qs._joins = self._joins.copy()
         if isinstance(table, AbstractQuery):
             table = Table(table)
-        qs._joins.append(("SEMI", table, condition))
+        qs._joins.append(("SEMI", table, condition, False))
         return qs
 
     def anti_join(
@@ -320,7 +352,7 @@ class select(AbstractQuery):
         qs._joins = self._joins.copy()
         if isinstance(table, AbstractQuery):
             table = Table(table)
-        qs._joins.append(("ANTI", table, condition))
+        qs._joins.append(("ANTI", table, condition, False))
         return qs
 
     def limit(self, n: int) -> Self:
