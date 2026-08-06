@@ -1,6 +1,15 @@
-# SQL Fusion
+# sql_fusion - Python Query Builder
 
-SQL Fusion is a lightweight, chainable SQL query builder for Python with zero dependencies.
+[![PyPI](https://img.shields.io/pypi/v/sql_fusion.svg)](https://pypi.org/project/sql_fusion/)
+[![Python](https://img.shields.io/pypi/pyversions/sql_fusion.svg)](https://pypi.org/project/sql_fusion/)
+[![Source](https://img.shields.io/badge/source-GitHub-24292f.svg)](https://github.com/Mastermind-U/sql_fusion)
+
+sql_fusion is a lightweight, chainable Python query builder with zero dependencies.
+It helps build parameterized SQL queries in Python for SQLite3, DuckDB,
+PostgreSQL, and other DB-API style backends.
+
+- PyPI package: [sql_fusion](https://pypi.org/project/sql_fusion/)
+- GitHub repository: [Mastermind-U/sql_fusion](https://github.com/Mastermind-U/sql_fusion)
 
 It focuses on one job:
 
@@ -18,6 +27,7 @@ That makes it easy to plug into your own connection layer.
 ## Table of Contents
 
 - [Motivation](#motivation)
+- [Links](#links)
 - [What You Get](#what-you-get)
 - [Installation](#installation)
 - [Public API](#public-api)
@@ -43,11 +53,17 @@ SQL builders often look similar from the outside, but they make very different t
 - some are broad SQL toolkits with dialect systems and advanced composition features
 - some keep SQL parameterized, while others render a finished SQL string directly
 
-This README compares SQL Fusion with several other Python query builders so it is easier to see where the library fits and what it is intentionally optimized for.
+This README compares sql_fusion with several other Python query builders so it is easier to see where the library fits and what it is intentionally optimized for.
 
-### Why SQL Fusion?
+## Links
 
-SQL Fusion is built for the middle ground:
+- PyPI: https://pypi.org/project/sql_fusion/
+- GitHub: https://github.com/Mastermind-U/sql_fusion
+- Documentation: https://github.com/Mastermind-U/sql_fusion/blob/main/README.md
+
+### Why sql_fusion?
+
+sql_fusion is built for the middle ground:
 
 - it stays small and chainable instead of turning into a full ORM
 - it keeps SQL parameterized by default, so the caller controls execution safely
@@ -66,13 +82,13 @@ SQLAlchemy is an excellent tool, but it is also a much heavier and more universa
 - it is optimized for a broad ORM and Core ecosystem, not only for a small SQL builder
 - some connectors and databases still do not have first-class SQLAlchemy integrations, which can make adoption less straightforward in mixed environments
 
-SQLAlchemy Core is closer to SQL Fusion than the full ORM, but it still carries more machinery than this project is meant to expose:
+SQLAlchemy Core is closer to sql_fusion than the full ORM, but it still carries more machinery than this project is meant to expose:
 
 - it is part of a broader ecosystem with dialects, compilation layers, and extra conventions
 - it can feel more verbose when you only want a small chainable builder
 - some connectors and databases still do not have smooth SQLAlchemy Core support, so portability can depend on the backend
 
-SQL Fusion is intentionally narrower so it can stay lightweight, easy to embed, and practical for DB-API style backends without extra complexity.
+sql_fusion is intentionally narrower so it can stay lightweight, easy to embed, and practical for DB-API style backends without extra complexity.
 
 ## What You Get
 
@@ -409,7 +425,7 @@ query, params = select().from_(paid_orders).compile()
 
 ## Set Operations
 
-SQL Fusion supports compound queries through three small wrapper classes:
+sql_fusion supports compound queries through three small wrapper classes:
 
 - `union(query1, query2, all_=False, by_name=False)`
 - `intersect(query1, query2, all_=False)`
@@ -556,9 +572,9 @@ If no columns are provided, the builder emits `SELECT *`.
 | --- | --- | --- |
 | `from_(table)` | Set the source table or subquery | Accepts a `Table` or another query builder. |
 | `join(table, condition)` | Add an `INNER JOIN` | The default join type. |
-| `left_join(table, condition)` | Add a `LEFT JOIN` | Keeps unmatched left rows. |
-| `right_join(table, condition)` | Add a `RIGHT JOIN` | Keeps unmatched right rows. |
-| `full_join(table, condition)` | Add a `FULL OUTER JOIN` | Keeps rows from both sides. |
+| `left_join(table, condition, *, is_outer=False)` | Add a `LEFT JOIN` | Set `is_outer=True` for `LEFT OUTER JOIN`. |
+| `right_join(table, condition, *, is_outer=False)` | Add a `RIGHT JOIN` | Set `is_outer=True` for `RIGHT OUTER JOIN`. |
+| `full_join(table, condition, *, is_outer=True)` | Add a `FULL JOIN` | Set `is_outer=False` for `FULL JOIN`; defaults to `FULL OUTER JOIN`. |
 | `cross_join(table)` | Add a `CROSS JOIN` | No `ON` clause. |
 | `semi_join(table, condition)` | Add a `SEMI JOIN` | Backend support depends on the database. |
 | `anti_join(table, condition)` | Add an `ANTI JOIN` | Backend support depends on the database. |
@@ -774,7 +790,7 @@ The library also exposes a few built-in compile-time helpers:
 | python-sql | Rich Pythonic SQL builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it keeps placeholders separate from args and can switch param styles via flavor | Partial, it can auto-alias tables and some subqueries, while join aliases are still often explicit | `JOIN`, subqueries, CTEs, `DISTINCT ON`, windows, `RETURNING`, `MERGE`, `UNION` / `INTERSECT` / `EXCEPT` | Dialect/flavor system with multiple param styles | Very broad SQL coverage and strong backend flexibility |
 | PyPika | Mature fluent query builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | No by default, it renders literal SQL strings with values injected into the output | Partial, it auto-aliases some subqueries and duplicate joins, but most table and join aliases are explicit | `JOIN`, subqueries, CTEs, set operations, analytics/window helpers, DDL support | Dialect-aware with vendor-specific extensions | One of the broadest and most extensible builders in the set |
 | SQLFactory | General-purpose SQL builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it emits placeholders and keeps args separately | No, subquery and join aliases are mostly explicit and part of the statement shape | `JOIN`, subselects, CTEs, window functions, set operations, `INSERT ... SELECT`, MySQL-style duplicate-key handling | MySQL / SQLite / PostgreSQL / Oracle / custom dialects, async execution helpers | Full-featured and explicit, with a heavier API than lightweight builders |
-| SQL Fusion | Lightweight chainable builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it returns `(sql, params)` and leaves binding to the caller | Yes, it auto-assigns stable table aliases and reuses them for subqueries and joins | `JOIN` variants including `CROSS`, `SEMI`, `ANTI`, subqueries, recursive CTEs, `ROLLUP`, `CUBE`, `GROUPING SETS`, functions, comments, `EXPLAIN` / `ANALYZE`, `DELETE RETURNING` | Backend-agnostic, `compile_expression()` hook for rewrites | Best when you want a compact, composable builder with post-processing hooks and no execution layer |
+| sql_fusion | Lightweight chainable builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it returns `(sql, params)` and leaves binding to the caller | Yes, it auto-assigns stable table aliases and reuses them for subqueries and joins | `JOIN` variants including `CROSS`, `SEMI`, `ANTI`, subqueries, recursive CTEs, `ROLLUP`, `CUBE`, `GROUPING SETS`, functions, comments, `EXPLAIN` / `ANALYZE`, `DELETE RETURNING` | Backend-agnostic, `compile_expression()` hook for rewrites | Best when you want a compact, composable builder with post-processing hooks and no execution layer |
 
 ## Syntax Comparison
 
@@ -783,7 +799,7 @@ object, the snippet uses it.
 
 | Project | Typical syntax shape |
 | --- | --- |
-| SQL Fusion | `users = Table("users"); orders = Table("orders"); select(users.id, users.name).from_(users).join(orders, users.id == orders.user_id).where(users.active == True).compile()` |
+| sql_fusion | `users = Table("users"); orders = Table("orders"); select(users.id, users.name).from_(users).join(orders, users.id == orders.user_id).where(users.active == True).compile()` |
 | PyPika | `users = Table("users"); orders = Table("orders"); Query.from_(users).join(orders).on(users.id == orders.user_id).select(users.id, users.name).where(users.active == True).get_sql()` |
 | python-sql | `user = Table("users"); tuple(user.select(user.name, where=user.active == True))` |
 | SQLFactory | `users = Table("users"); orders = Table("orders"); Select(users.id, users.name, table=users, join=[Join(orders, Eq("users.id", "orders.user_id"))]).where(Eq("users.active", True))` |
