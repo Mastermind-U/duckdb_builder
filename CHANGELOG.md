@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.3.0 - 2026-08-07
+
+### Added
+
+- Optional `OUTER` keyword rendering for `left_join()` and `right_join()` via
+  the new `is_outer=True` argument.
+- `full_join(..., is_outer=False)` support for emitting `FULL JOIN` without the
+  `OUTER` keyword while keeping `FULL OUTER JOIN` as the default.
+- Test coverage for `LEFT OUTER JOIN`, `RIGHT OUTER JOIN`, and `FULL JOIN`
+  rendering.
+- PyPI-facing project keywords and classifiers in package metadata.
+- README badges, project links, and updated API documentation for the expanded
+  join syntax.
+
+### Notes
+
+- Existing `left_join()`, `right_join()`, and `full_join()` calls keep their
+  previous output by default.
+- The package metadata and README now consistently use the `sql_fusion` package
+  name.
+
 ## 1.2.2 - 2026-04-07
 
 ### Added
