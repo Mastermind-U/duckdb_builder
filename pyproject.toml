@@ -1,6 +1,6 @@
 [project]
 name = "sql_fusion"
-version = "1.2.2"
+version = "1.3.0"
 description = "Lightweight Python query builder for composable, parameterized SQL."
 readme = "README.md"
 authors = [{ name = "Mastermind-U", email = "rex49513@gmail.com" }]
