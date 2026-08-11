@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.0 - 2026-08-11
+
+### Added
+
+- Custom SQL placeholder generators via
+  `compile(param_generator=get_qmark_params)`, with a single internal iterator
+  shared across nested queries, CTEs, set operations, functions, and operators.
+- Built-in placeholder generators:
+  - `get_qmark_params()` for the default `?` style.
+  - `get_format_specifier()` for psycopg-style `%s` placeholders.
+  - `get_numbered_params()` for numbered placeholders such as `$1`, `$2`,
+    `$3`.
+- Public exports for the placeholder generator helpers.
+- Test coverage for custom placeholders across functions, `IN`, CTEs, set
+  operations, and `UPDATE` statements with subqueries.
+
+### Changed
+
+- Updated README psycopg3 guidance to use `compile(get_format_specifier)`
+  instead of rewriting `?` placeholders with `compile_expression()`.
+- Documented how to define and pass custom placeholder generator functions.
+- Clarified that `compile_expression()` is intended for final SQL tweaks, while
+  placeholder styles should use `compile(...)` parameter generators.
+
 ## 1.4.0 - 2026-08-11
 
 ### Added
