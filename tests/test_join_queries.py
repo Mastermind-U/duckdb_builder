@@ -138,10 +138,14 @@ def test_left_outer_join_basic() -> None:
     """Test LEFT OUTER JOIN."""
     users = Table("users")
     orders = Table("orders")
-    q = select().from_(users).left_join(
-        orders,
-        users.id == orders.user_id,
-        is_outer=True,
+    q = (
+        select()
+        .from_(users)
+        .left_join(
+            orders,
+            users.id == orders.user_id,
+            is_outer=True,
+        )
     )
     sql, params = q.build_query()
     assert sql == (
@@ -172,10 +176,14 @@ def test_right_outer_join_basic() -> None:
     """Test RIGHT OUTER JOIN."""
     users = Table("users")
     orders = Table("orders")
-    q = select().from_(users).right_join(
-        orders,
-        users.id == orders.user_id,
-        is_outer=True,
+    q = (
+        select()
+        .from_(users)
+        .right_join(
+            orders,
+            users.id == orders.user_id,
+            is_outer=True,
+        )
     )
     sql, params = q.build_query()
     assert sql == (
@@ -212,10 +220,14 @@ def test_full_join_without_outer_basic() -> None:
     """Test FULL JOIN without OUTER keyword."""
     users = Table("users")
     orders = Table("orders")
-    q = select().from_(users).full_join(
-        orders,
-        users.id == orders.user_id,
-        is_outer=False,
+    q = (
+        select()
+        .from_(users)
+        .full_join(
+            orders,
+            users.id == orders.user_id,
+            is_outer=False,
+        )
     )
     sql, params = q.build_query()
     assert sql == (
