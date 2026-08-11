@@ -1,6 +1,8 @@
+from collections.abc import Iterator
 from typing import Any, Self
 
 from sql_fusion.composite_table import AbstractQuery, AliasRegistry, Table
+from sql_fusion.params import get_qmark_params
 
 
 class insert(AbstractQuery):
@@ -25,17 +27,19 @@ class insert(AbstractQuery):
     def build_query(
         self,
         alias_registry: AliasRegistry | None = None,
+        params: Iterator[str] | None = None,
     ) -> tuple[str, tuple[Any, ...]]:
         if not self._values:
             raise ValueError("No values provided for insert")
         registry = alias_registry or self._alias_registry
+        params = params or get_qmark_params()
         table = self._get_table()
-        with_sql, with_params = self._build_with_clause(registry)
+        with_sql, with_params = self._build_with_clause(registry, params)
 
         columns = list(self._values.keys())
         col_names = ", ".join(f'"{col}"' for col in columns)
-        placeholders = ", ".join("?" * len(columns))
-        params = tuple(self._values[col] for col in columns)
+        placeholders = ", ".join(next(params) for _ in columns)
+        bound_params = tuple(self._values[col] for col in columns)
 
         insert_stmnt = "INSERT"
 
@@ -68,5 +72,5 @@ class insert(AbstractQuery):
 
         return self._apply_compile_expressions(
             " ".join(query_parts),
-            tuple(with_params) + params,
+            tuple(with_params) + bound_params,
         )

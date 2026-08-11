@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from copy import copy
 from typing import Any, Self
 
@@ -16,6 +17,7 @@ from sql_fusion.composite_table import (
     WindowFunctionCall,
 )
 from sql_fusion.operators import EqualOperator
+from sql_fusion.params import get_qmark_params
 
 SelectExpression = (
     Column | Alias | FunctionCall | FilteredFunctionCall | WindowFunctionCall
@@ -44,17 +46,20 @@ class select(AbstractQuery):
     def build_query(  # noqa: C901, PLR0912, PLR0915
         self,
         alias_registry: AliasRegistry | None = None,
+        params: Iterator[str] | None = None,
     ) -> tuple[str, tuple[Any, ...]]:
         registry = alias_registry or self._alias_registry
-        params: list[Any] = []
-        with_sql, with_params = self._build_with_clause(registry)
-        params.extend(with_params)
+        params = params or get_qmark_params()
+        bound_params: list[Any] = []
+        with_sql, with_params = self._build_with_clause(registry, params)
+        bound_params.extend(with_params)
         table = self._get_table()
         table_sql, table_params, alias = self._prepare_table_entry(
             table,
             registry,
+            params,
         )
-        joins_data = self._prepare_join_entries(registry)
+        joins_data = self._prepare_join_entries(registry, params)
 
         if not self._columns:
             col_part: str = "*"
@@ -69,10 +74,11 @@ class select(AbstractQuery):
                     # Handle function calls
                     func_sql, func_params = col.to_sql(
                         registry,
+                        params,
                         include_alias=True,
                     )
                     col_parts.append(func_sql)
-                    params.extend(func_params)
+                    bound_params.extend(func_params)
                 elif isinstance(col, Alias):
                     col_parts.append(col.to_sql(registry))
                 else:
@@ -95,21 +101,25 @@ class select(AbstractQuery):
                 f'{table_sql} AS "{alias.name}"',
             ),
         )
-        params.extend(table_params)
+        bound_params.extend(table_params)
 
         # Add JOIN clauses
         if joins_data:
             joins_sql, joins_params = self._build_joins_from_entries(
                 registry,
+                params,
                 joins_data,
             )
             query_parts.append(joins_sql)
-            params.extend(joins_params)
+            bound_params.extend(joins_params)
 
         if self._where_condition:
-            where_sql, where_params = self._where_condition.to_sql(registry)
+            where_sql, where_params = self._where_condition.to_sql(
+                registry,
+                params,
+            )
             query_parts.append(self._build_clause("WHERE", "WHERE", where_sql))
-            params.extend(where_params)
+            bound_params.extend(where_params)
 
         if (
             self._group_by_columns
@@ -120,24 +130,28 @@ class select(AbstractQuery):
                 registry,
             )
             query_parts.append(group_by_sql)
-            params.extend(group_by_params)
+            bound_params.extend(group_by_params)
 
         if self._having_condition:
-            having_sql, having_params = self._having_condition.to_sql(registry)
+            having_sql, having_params = self._having_condition.to_sql(
+                registry,
+                params,
+            )
             query_parts.append(
                 self._build_clause("HAVING", "HAVING", having_sql),
             )
-            params.extend(having_params)
+            bound_params.extend(having_params)
 
         if self._windows:
             window_parts: list[str] = []
             for window in self._windows:
                 window_sql, window_params = window.to_sql(
                     registry,
+                    params,
                     include_name=True,
                 )
                 window_parts.append(window_sql)
-                params.extend(window_params)
+                bound_params.extend(window_params)
 
             query_parts.append(
                 self._build_clause(
@@ -154,8 +168,8 @@ class select(AbstractQuery):
                     col,
                     (FunctionCall, FilteredFunctionCall, WindowFunctionCall),
                 ):
-                    col_sql, col_params = col.to_sql(registry)
-                    params.extend(col_params)
+                    col_sql, col_params = col.to_sql(registry, params)
+                    bound_params.extend(col_params)
                 elif isinstance(col, Alias):
                     col_sql = col.to_sql(registry)
                 else:
@@ -185,26 +199,28 @@ class select(AbstractQuery):
 
         return self._apply_compile_expressions(
             " ".join(query_parts),
-            tuple(params),
+            tuple(bound_params),
         )
 
     def _prepare_table_entry(
         self,
         table: Table,
         alias_registry: AliasRegistry,
+        params: Iterator[str],
     ) -> tuple[str, tuple[Any, ...], Alias]:
         if table._subquery is not None:  # pyright: ignore[reportPrivateUsage]
-            table_sql, table_params = table.to_sql(alias_registry)
+            table_sql, table_params = table.to_sql(alias_registry, params)
             alias = alias_registry.get_alias_for_table(table)
             return table_sql, table_params, alias
 
         alias = alias_registry.get_alias_for_table(table)
-        table_sql, table_params = table.to_sql(alias_registry)
+        table_sql, table_params = table.to_sql(alias_registry, params)
         return table_sql, table_params, alias
 
     def _prepare_join_entries(
         self,
         alias_registry: AliasRegistry,
+        params: Iterator[str],
     ) -> list[
         tuple[
             str,
@@ -232,6 +248,7 @@ class select(AbstractQuery):
             join_sql, join_params, alias = self._prepare_table_entry(
                 join_table,
                 alias_registry,
+                params,
             )
             join_entries.append(
                 (
@@ -250,6 +267,7 @@ class select(AbstractQuery):
     def _build_joins_from_entries(
         self,
         alias_registry: AliasRegistry,
+        params: Iterator[str],
         join_entries: list[
             tuple[
                 str,
@@ -282,6 +300,7 @@ class select(AbstractQuery):
             if condition is not None:
                 condition_sql, condition_params = condition.to_sql(
                     alias_registry,
+                    params,
                 )
                 join_body += f" ON {condition_sql}"
                 joins_params.extend(condition_params)

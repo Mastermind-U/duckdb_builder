@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from copy import copy
 from typing import Any, Callable, ClassVar, Self, TypeAlias, cast
 
@@ -18,6 +18,7 @@ from sql_fusion.operators import (
     NotInOperator,
     TextOperator,
 )
+from sql_fusion.params import ParamGenerator, get_qmark_params
 
 CompileExpression = Callable[
     [str, tuple[Any, ...]],
@@ -242,18 +243,20 @@ class AbstractQuery:
     def _build_with_clause(
         self,
         alias_registry: AliasRegistry | None = None,
+        params: Iterator[str] | None = None,
     ) -> tuple[str, list[Any]]:
         if not self._ctes:
             return "", []
 
         registry = alias_registry or self._alias_registry
+        params = params or get_qmark_params()
         with_parts: list[str] = []
-        params: list[Any] = []
+        bound_params: list[Any] = []
 
         for name, query in self._ctes:
-            query_sql, query_params = query.build_query(registry)
+            query_sql, query_params = query.build_query(registry, params)
             with_parts.append(f'"{name}" AS ({query_sql})')
-            params.extend(query_params)
+            bound_params.extend(query_params)
 
         recursive_part = " RECURSIVE" if self._with_recursive else ""
         keyword = f"WITH{recursive_part}"
@@ -261,7 +264,7 @@ class AbstractQuery:
             "WITH",
             keyword,
             ", ".join(with_parts),
-        ), params
+        ), bound_params
 
     def _apply_compile_expressions(
         self,
@@ -316,11 +319,15 @@ class AbstractQuery:
     def build_query(
         self,
         alias_registry: AliasRegistry | None = None,
+        params: Iterator[str] | None = None,
     ) -> tuple[str, tuple[Any, ...]]:
         raise NotImplementedError()
 
-    def compile(self) -> tuple[str, tuple[Any, ...]]:
-        return self.build_query()
+    def compile(
+        self,
+        param_generator: ParamGenerator = get_qmark_params,
+    ) -> tuple[str, tuple[Any, ...]]:
+        return self.build_query(params=param_generator())
 
 
 class ComparableExpression:
@@ -401,29 +408,37 @@ class BinaryExpression(ComparableExpression):
     def _render_operand(
         operand: Any,
         alias_registry: AliasRegistry,
+        params: Iterator[str],
     ) -> tuple[str, tuple[Any, ...]]:
         if isinstance(operand, BinaryExpression):
-            sql, params = operand.to_sql(alias_registry)
-            return f"({sql})", params
+            sql, bound_params = operand.to_sql(alias_registry, params)
+            return f"({sql})", bound_params
         if isinstance(
             operand,
             (FunctionCall, FilteredFunctionCall, WindowFunctionCall),
         ):
-            return operand.to_sql(alias_registry)
+            return operand.to_sql(alias_registry, params)
         if isinstance(operand, Column | Alias):
             return operand.get_ref(alias_registry), tuple()
         if isinstance(operand, ComparableExpression):
             return operand.get_ref(alias_registry), tuple()
-        return "?", (operand,)
+        return next(params), (operand,)
 
     def to_sql(
         self,
         alias_registry: AliasRegistry,
+        params: Iterator[str] | None = None,
     ) -> tuple[str, tuple[Any, ...]]:
-        left_sql, left_params = self._render_operand(self.left, alias_registry)
+        params = params or get_qmark_params()
+        left_sql, left_params = self._render_operand(
+            self.left,
+            alias_registry,
+            params,
+        )
         right_sql, right_params = self._render_operand(
             self.right,
             alias_registry,
+            params,
         )
         return (
             f"{left_sql} {self.operator} {right_sql}",
@@ -461,6 +476,7 @@ class Condition:
     def _render_expression(
         value: ComparableExpression | FunctionCall | WindowFunctionCall,
         alias_registry: AliasRegistry,
+        params: Iterator[str],
     ) -> tuple[str, tuple[Any, ...]]:
         if isinstance(
             value,
@@ -471,7 +487,7 @@ class Condition:
                 WindowFunctionCall,
             ),
         ):
-            return value.to_sql(alias_registry)
+            return value.to_sql(alias_registry, params)
         return value.get_ref(alias_registry), tuple()
 
     @staticmethod
@@ -497,18 +513,21 @@ class Condition:
     def to_sql(
         self,
         alias_registry: AliasRegistry,
+        params: Iterator[str] | None = None,
     ) -> tuple[str, tuple[Any, ...]]:
+        params = params or get_qmark_params()
+
         def apply_negation(
             sql: str,
-            params: tuple[Any, ...],
+            bound_params: tuple[Any, ...],
         ) -> tuple[str, tuple[Any, ...]]:
             if self.negated:
-                return (f"NOT ({sql})" if sql else "NOT", params)
-            return sql, params
+                return (f"NOT ({sql})" if sql else "NOT", bound_params)
+            return sql, bound_params
 
         if self.left and self.right:
-            left_sql, left_params = self.left.to_sql(alias_registry)
-            right_sql, right_params = self.right.to_sql(alias_registry)
+            left_sql, left_params = self.left.to_sql(alias_registry, params)
+            right_sql, right_params = self.right.to_sql(alias_registry, params)
             operator_str: str = "AND" if self.is_and else "OR"
             return apply_negation(
                 f"({left_sql} {operator_str} {right_sql})",
@@ -521,6 +540,7 @@ class Condition:
         col_ref, col_params = self._render_expression(
             self.column,
             alias_registry,
+            params,
         )
         operator_spec = self.operator
         if operator_spec is None:
@@ -532,6 +552,7 @@ class Condition:
             value_sql, value_params = self._render_expression(
                 self.value,
                 alias_registry,
+                params,
             )
             sql, op_params = operator.to_sql_ref(value_sql)
             return apply_negation(sql, col_params + value_params + op_params)
@@ -539,6 +560,7 @@ class Condition:
         if isinstance(self.value, AbstractQuery):
             subquery_sql, subquery_params = self.value.build_query(
                 alias_registry,
+                params,
             )
             sql, op_params = operator.to_sql_ref(subquery_sql)
             return apply_negation(
@@ -546,7 +568,7 @@ class Condition:
                 col_params + subquery_params + op_params,
             )
 
-        sql, op_params = operator.to_sql(self.value)
+        sql, op_params = operator.to_sql(self.value, params)
         return apply_negation(sql, col_params + op_params)
 
 
@@ -626,6 +648,7 @@ class FunctionCall(ComparableExpression):
     def to_sql(
         self,
         alias_registry: AliasRegistry,
+        params: Iterator[str] | None = None,
         *,
         include_alias: bool = False,
     ) -> tuple[str, tuple[Any, ...]]:
@@ -635,8 +658,9 @@ class FunctionCall(ComparableExpression):
             Tuple of (sql_string, parameters_tuple)
 
         """
+        params = params or get_qmark_params()
         sql_args: list[str] = []
-        params: list[Any] = []
+        bound_params: list[Any] = []
 
         for arg in self.args:
             if isinstance(arg, Column):
@@ -644,30 +668,33 @@ class FunctionCall(ComparableExpression):
 
             elif isinstance(arg, FunctionCall):
                 # Nested function call
-                nested_sql, nested_params = arg.to_sql(alias_registry)
+                nested_sql, nested_params = arg.to_sql(
+                    alias_registry,
+                    params,
+                )
                 sql_args.append(nested_sql)
-                params.extend(nested_params)
+                bound_params.extend(nested_params)
             elif arg == "*":
                 # Special case for COUNT(*)
                 sql_args.append("*")
             elif isinstance(arg, str):
                 # String literal - parameterized
-                sql_args.append("?")
-                params.append(arg)
+                sql_args.append(next(params))
+                bound_params.append(arg)
             elif isinstance(arg, (int, float)):
                 # Numeric literal - parameterized
-                sql_args.append("?")
-                params.append(arg)
+                sql_args.append(next(params))
+                bound_params.append(arg)
             else:
                 # Other types - parameterized
-                sql_args.append("?")
-                params.append(arg)
+                sql_args.append(next(params))
+                bound_params.append(arg)
 
         args_sql = ", ".join(sql_args)
         sql = f"{self.name}({args_sql})"
         if include_alias and self._alias is not None:
             sql = f"{sql} AS {self._alias.get_ref(alias_registry)}"
-        return sql, tuple(params)
+        return sql, tuple(bound_params)
 
     def __repr__(self) -> str:
         args_repr = ", ".join(repr(arg) for arg in self.args)
@@ -756,12 +783,18 @@ class FilteredFunctionCall(ComparableExpression):
     def to_sql(
         self,
         alias_registry: AliasRegistry,
+        params: Iterator[str] | None = None,
         *,
         include_alias: bool = False,
     ) -> tuple[str, tuple[Any, ...]]:
-        function_sql, function_params = self.function.to_sql(alias_registry)
+        params = params or get_qmark_params()
+        function_sql, function_params = self.function.to_sql(
+            alias_registry,
+            params,
+        )
         condition_sql, condition_params = self.condition.to_sql(
             alias_registry,
+            params,
         )
         sql = f"{function_sql} FILTER (WHERE {condition_sql})"
         if include_alias and self._alias is not None:
@@ -1026,9 +1059,10 @@ class Window:
     def _render_expression(
         expression: WindowExpression,
         alias_registry: AliasRegistry,
+        params: Iterator[str],
     ) -> tuple[str, tuple[Any, ...]]:
         if isinstance(expression, (FunctionCall, WindowFunctionCall)):
-            return expression.to_sql(alias_registry)
+            return expression.to_sql(alias_registry, params)
         return expression.get_ref(alias_registry), tuple()
 
     @staticmethod
@@ -1056,10 +1090,12 @@ class Window:
     def to_sql(
         self,
         alias_registry: AliasRegistry,
+        params: Iterator[str] | None = None,
         *,
         include_name: bool = False,
     ) -> tuple[str, tuple[Any, ...]]:
-        params: list[Any] = []
+        params = params or get_qmark_params()
+        bound_params: list[Any] = []
         parts: list[str] = []
 
         if self.base is not None:
@@ -1071,9 +1107,10 @@ class Window:
                 sql, expression_params = self._render_expression(
                     expression,
                     alias_registry,
+                    params,
                 )
                 partition_parts.append(sql)
-                params.extend(expression_params)
+                bound_params.extend(expression_params)
             parts.append(f"PARTITION BY {', '.join(partition_parts)}")
 
         if self.order_by:
@@ -1082,11 +1119,12 @@ class Window:
                 sql, expression_params = self._render_expression(
                     expression,
                     alias_registry,
+                    params,
                 )
                 if descending:
                     sql = f"{sql} DESC"
                 order_parts.append(sql)
-                params.extend(expression_params)
+                bound_params.extend(expression_params)
             parts.append(f"ORDER BY {', '.join(order_parts)}")
 
         if self.frame_type is not None and self.frame is not None:
@@ -1101,7 +1139,7 @@ class Window:
                 raise ValueError("Named WINDOW clause requires a window name")
             sql = f"{self.name.get_ref(alias_registry)} AS ({sql})"
 
-        return sql, tuple(params)
+        return sql, tuple(bound_params)
 
 
 class WindowFunctionCall(ComparableExpression):
@@ -1127,10 +1165,12 @@ class WindowFunctionCall(ComparableExpression):
     def to_sql(
         self,
         alias_registry: AliasRegistry,
+        params: Iterator[str] | None = None,
         *,
         include_alias: bool = False,
     ) -> tuple[str, tuple[Any, ...]]:
-        func_sql, func_params = self.function.to_sql(alias_registry)
+        params = params or get_qmark_params()
+        func_sql, func_params = self.function.to_sql(alias_registry, params)
 
         if self.window.name is not None and not (
             self.window.partition_by
@@ -1142,7 +1182,10 @@ class WindowFunctionCall(ComparableExpression):
             window_sql = self.window.get_ref(alias_registry)
             window_params: tuple[Any, ...] = ()
         else:
-            window_body, window_params = self.window.to_sql(alias_registry)
+            window_body, window_params = self.window.to_sql(
+                alias_registry,
+                params,
+            )
             window_sql = f"({window_body})"
 
         sql = f"{func_sql} OVER {window_sql}"
@@ -1227,10 +1270,12 @@ class Table:
     def to_sql(
         self,
         alias_registry: AliasRegistry | None = None,
+        params: Iterator[str] | None = None,
     ) -> tuple[str, tuple[Any, ...]]:
         if self._subquery is not None:
             subquery_sql, subquery_params = self._subquery.build_query(
                 alias_registry,
+                params,
             )
             return f"({subquery_sql})", subquery_params
 

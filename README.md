@@ -85,7 +85,8 @@ large database toolkit.
 - it builds `SELECT`, `INSERT`, `UPDATE`, and `DELETE` statements
 - it supports joins, subqueries, CTEs, set operations, grouping helpers, functions, and window expressions
 - it adds automatic table alias management for composed queries
-- it exposes `compile_expression()` for placeholder rewrites and backend-specific SQL output
+- it supports custom placeholder generators such as `%s` and `$1`
+- it exposes `compile_expression()` for final backend-specific SQL tweaks
 
 In short, the goal is to keep the ergonomics of a composable SQL query builder
 for Python while still covering the SQL building blocks that matter in
@@ -152,9 +153,11 @@ from sql_fusion import (
     Table,
     delete,
     except_,
+    get_format_specifier,
     func,
     insert,
     intersect,
+    get_numbered_params,
     select,
     union,
     text_op,
@@ -172,6 +175,8 @@ from sql_fusion import (
 - `update` creates an `UPDATE` builder.
 - `delete` creates a `DELETE` builder.
 - `func` is a dynamic SQL function registry.
+- `get_format_specifier` generates psycopg-style `%s` placeholders.
+- `get_numbered_params` generates numbered placeholders such as `$1`, `$2`, `$3`.
 - `text_op` builds a condition with a raw SQL operator such as `@>`.
 - `Alias` represents a reusable SQL alias for aggregate expressions and
   `HAVING` conditions.
@@ -258,19 +263,13 @@ duck_conn.execute(duck_sql, duck_params).fetchall()
 ## PostgreSQL / psycopg3 Placeholder Example
 
 psycopg3 usually expects `%s` placeholders instead of `?`. For a Python query
-builder targeting Postgres through psycopg3, the simplest approach is to add a
-compile expression that rewrites placeholders at the very end.
+builder targeting Postgres through psycopg3, pass the built-in
+`get_format_specifier` generator to `compile()`.
 
 ```python
-from typing import Any
-
 import psycopg
 
-from sql_fusion import Table, select
-
-
-def to_psycopg3(sql: str, params: tuple[Any, ...]) -> tuple[str, tuple[Any, ...]]:
-    return sql.replace("?", "%s"), params
+from sql_fusion import Table, get_format_specifier, select
 
 
 users = Table("users")
@@ -281,14 +280,24 @@ query = (
     .where(users.status == "active")
 )
 
-pg_sql, pg_params = query.compile_expression(to_psycopg3).compile()
+pg_sql, pg_params = query.compile(get_format_specifier)
 pg_conn = psycopg.connect("dbname=example user=example password=example")
 pg_conn.execute(pg_sql, pg_params).fetchall()
 ```
 
-If you only target DuckDB, no rewrite is needed. If you target psycopg3, the
-compile expression keeps the query builder backend-agnostic while still
-producing driver-friendly SQL.
+Generated style:
+
+```sql
+SELECT "a"."id", "a"."name" FROM "users" AS "a" WHERE "a"."status" = %s
+```
+
+If you need numbered placeholders, use `get_numbered_params`:
+
+```python
+pg_sql, pg_params = query.compile(get_numbered_params)
+```
+
+That produces `$1`, `$2`, `$3`, and so on.
 
 ## Fluent SQL Builder API Basics
 
@@ -571,7 +580,7 @@ These methods are available on the shared query builders.
 | `after_clause(clause, text, hint=False)` | Insert a comment after a clause keyword | Useful for hints and debug annotations. |
 | `explain(analyze=False, verbose=False)` | Wrap the query in `EXPLAIN` | Can be chained with other compile expressions. |
 | `analyze(verbose=False)` | Shortcut for `EXPLAIN ANALYZE` | Equivalent to `explain(analyze=True, verbose=verbose)`. |
-| `compile()` | Build the final SQL and parameters | Returns `(sql, params)`. |
+| `compile(param_generator=get_qmark_params)` | Build the final SQL and parameters | Returns `(sql, params)`. Use `get_format_specifier` for `%s` placeholders or `get_numbered_params` for `$1` style. |
 
 ### `select(...)`
 
@@ -645,7 +654,8 @@ query = update(users).set(status="inactive")
 Behavior notes:
 
 - column references in `SET` are table-qualified by default
-- if a backend needs a different style, use `compile_expression(...)`
+- if a backend needs different placeholders, pass a generator such as
+  `get_format_specifier` to `compile()`
 
 ### `delete(table=None)`
 
@@ -811,19 +821,45 @@ It receives the final SQL string and parameter tuple, then returns a modified pa
 
 This is useful for:
 
-- placeholder rewrites
 - backend-specific syntax adjustments
 - adding `ORDER BY`, `LIMIT`, or other final SQL fragments
 
-### Example: psycopg3 Placeholder Rewrite
+For placeholder styles, prefer `compile(get_format_specifier)` for `%s` or
+`compile(get_numbered_params)` for `$1`, `$2`, `$3`.
 
 ```python
-from typing import Any
+from sql_fusion import get_format_specifier, get_numbered_params
 
 
-def to_psycopg3(sql: str, params: tuple[Any, ...]) -> tuple[str, tuple[Any, ...]]:
-    return sql.replace("?", "%s"), params
+psycopg_sql, psycopg_params = query.compile(get_format_specifier)
+postgres_sql, postgres_params = query.compile(get_numbered_params)
 ```
+
+### Custom Placeholder Generators
+
+You can pass your own placeholder generator to `compile()`. It must be a
+zero-argument function that returns an `Iterator[str]`; sql_fusion calls
+`next()` once for each bound value while compiling the query.
+
+```python
+from collections.abc import Iterator
+
+
+def get_at_numbered_params() -> Iterator[str]:
+    index = 1
+    while True:
+        yield f"@p{index}"
+        index += 1
+```
+
+Use it the same way as the built-in generators:
+
+```python
+sql, params = query.compile(get_at_numbered_params)
+```
+
+For a query with three bound values, this emits `@p1`, `@p2`, and `@p3`.
+The compiled result still returns the parameter values as a tuple.
 
 ### Example: Append Sorting and Pagination
 
@@ -859,6 +895,8 @@ The library also exposes a few built-in compile-time helpers:
 ## What To Remember
 
 - `compile()` returns `(sql, params)`
+- `compile(get_format_specifier)` emits `%s` placeholders for psycopg-style drivers
+- `compile(get_numbered_params)` emits `$1`, `$2`, `$3` placeholders
 - SQL identifiers are quoted with double quotes
 - values are parameterized with placeholders
 - query builders are chainable
@@ -897,12 +935,12 @@ layer. It is for building SQL queries without an ORM.
 
 ### What databases does sql_fusion support?
 
-sql_fusion generates parameterized SQL with `?` placeholders and quoted
-identifiers. The test suite verifies execution with SQLite and DuckDB. The
-README also shows how to adapt placeholders for PostgreSQL through psycopg3.
-Other DB-API style backends, including MySQL drivers, may work when the
-generated SQL and any placeholder rewrites match the database, but they are not
-claimed as fully tested dialects.
+sql_fusion generates parameterized SQL with `?` placeholders by default and
+quoted identifiers. The test suite verifies execution with SQLite and DuckDB.
+For PostgreSQL through psycopg3, pass `get_format_specifier` to `compile()` to emit
+`%s` placeholders. Other DB-API style backends may work when the generated SQL
+and placeholder style match the database, but they are not claimed as fully
+tested dialects.
 
 ### How is sql_fusion different from SQLAlchemy?
 

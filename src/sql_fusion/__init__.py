@@ -12,6 +12,7 @@ from .composite_table import (
     func,
     text_op,
 )
+from .params import get_format_specifier, get_numbered_params, get_qmark_params
 from .query.delete import delete
 from .query.insert import insert
 from .query.select import select
@@ -32,6 +33,9 @@ __all__ = [
     "delete",
     "except_",
     "func",
+    "get_format_specifier",
+    "get_numbered_params",
+    "get_qmark_params",
     "insert",
     "intersect",
     "select",

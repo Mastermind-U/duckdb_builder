@@ -1,6 +1,8 @@
+from collections.abc import Iterator
 from typing import Any
 
 from sql_fusion.composite_table import AbstractQuery, AliasRegistry
+from sql_fusion.params import get_qmark_params
 
 
 class _set_operation(AbstractQuery):
@@ -20,21 +22,32 @@ class _set_operation(AbstractQuery):
         self,
         query: AbstractQuery,
         alias_registry: AliasRegistry,
+        params: Iterator[str],
     ) -> tuple[str, tuple[Any, ...]]:
-        return query.build_query(alias_registry)
+        return query.build_query(alias_registry, params)
 
     def build_query(
         self,
         alias_registry: AliasRegistry | None = None,
+        params: Iterator[str] | None = None,
     ) -> tuple[str, tuple[Any, ...]]:
         registry = alias_registry or self._alias_registry
-        params: list[Any] = []
+        params = params or get_qmark_params()
+        bound_params: list[Any] = []
 
-        with_sql, with_params = self._build_with_clause(registry)
-        params.extend(with_params)
+        with_sql, with_params = self._build_with_clause(registry, params)
+        bound_params.extend(with_params)
 
-        left_sql, left_params = self._render_query(self._query1, registry)
-        right_sql, right_params = self._render_query(self._query2, registry)
+        left_sql, left_params = self._render_query(
+            self._query1,
+            registry,
+            params,
+        )
+        right_sql, right_params = self._render_query(
+            self._query2,
+            registry,
+            params,
+        )
 
         query_parts: list[str] = []
         if with_sql:
@@ -43,12 +56,12 @@ class _set_operation(AbstractQuery):
             f"{left_sql} {self._operator_sql()} {right_sql}",
         )
 
-        params.extend(left_params)
-        params.extend(right_params)
+        bound_params.extend(left_params)
+        bound_params.extend(right_params)
 
         return self._apply_compile_expressions(
             " ".join(query_parts),
-            tuple(params),
+            tuple(bound_params),
         )
 
 

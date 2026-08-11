@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from copy import copy
 from typing import Any, Self
 
@@ -8,6 +9,7 @@ from sql_fusion.composite_table import (
     FunctionCall,
     Table,
 )
+from sql_fusion.params import get_qmark_params
 
 
 class delete(AbstractQuery):
@@ -30,29 +32,34 @@ class delete(AbstractQuery):
     def build_query(
         self,
         alias_registry: AliasRegistry | None = None,
+        params: Iterator[str] | None = None,
     ) -> tuple[str, tuple[Any, ...]]:
         registry = alias_registry or self._alias_registry
+        params = params or get_qmark_params()
         table = self._get_table()
         alias = registry.get_alias_for_table(table)
-        with_sql, with_params = self._build_with_clause(registry)
+        with_sql, with_params = self._build_with_clause(registry, params)
         from_clause = self._build_clause(
             "FROM",
             "FROM",
             f'"{table.get_name()}" AS "{alias.name}"',
         )
         query = self._build_clause("DELETE", "DELETE", from_clause)
-        params: list[Any] = list(with_params)
+        bound_params: list[Any] = list(with_params)
 
         if self._where_condition:
-            where_sql, where_params = self._where_condition.to_sql(registry)
+            where_sql, where_params = self._where_condition.to_sql(
+                registry,
+                params,
+            )
             query += f" {self._build_clause('WHERE', 'WHERE', where_sql)}"
-            params.extend(where_params)
+            bound_params.extend(where_params)
 
         if self._returning_all:
             query += f" {self._build_clause('RETURNING', 'RETURNING', '*')}"
             return self._apply_compile_expressions(
                 f"{with_sql} {query}" if with_sql else query,
-                tuple(params),
+                tuple(bound_params),
             )
 
         if self._returning_columns:
@@ -60,9 +67,9 @@ class delete(AbstractQuery):
 
             for col in self._returning_columns:
                 if isinstance(col, FunctionCall):
-                    func_sql, func_params = col.to_sql(registry)
+                    func_sql, func_params = col.to_sql(registry, params)
                     returning_parts.append(func_sql)
-                    params.extend(func_params)
+                    bound_params.extend(func_params)
                 else:
                     alias = registry.get_alias_for_table(col.table)
                     returning_parts.append(f'"{alias.name}"."{col.name}"')
@@ -75,7 +82,7 @@ class delete(AbstractQuery):
 
         return self._apply_compile_expressions(
             f"{with_sql} {query}" if with_sql else query,
-            tuple(params),
+            tuple(bound_params),
         )
 
     def from_(self, table: Table | AbstractQuery) -> Self:
