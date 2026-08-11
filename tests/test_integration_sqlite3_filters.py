@@ -10,6 +10,7 @@ import pytest
 from sql_fusion import (
     Alias,
     Table,
+    Window,
     delete,
     except_,
     func,
@@ -705,6 +706,74 @@ def test_grouped_aggregate_query_without_alias_having(
     assert rows == [("completed", 4, 640)]
 
 
+def test_sqlite_complex_window_query(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    orders = Table("orders")
+    users = Table("users")
+    ranked_orders = Table(
+        select(
+            orders.user_id,
+            orders.id,
+            orders.total,
+            func.rank().over("user_total_order").as_("total_rank"),
+            func.sum(orders.total)
+            .over("user_running_id")
+            .as_(
+                "running_total",
+            ),
+            func.count("*")
+            .over(partition_by=orders.user_id)
+            .as_(
+                "order_count",
+            ),
+        )
+        .from_(orders)
+        .window(
+            "user_total_order",
+            partition_by=orders.user_id,
+            order_by=orders.total,
+            descending=True,
+        )
+        .window(
+            "user_running_id",
+            partition_by=orders.user_id,
+            order_by=orders.id,
+            rows=Window.Rows.between(
+                Window.Rows.unbounded_preceding(),
+                Window.Rows.current_row(),
+            ),
+        ),
+    )
+
+    query, params = (
+        select(
+            users.name,
+            ranked_orders.id,
+            ranked_orders.total,
+            ranked_orders.total_rank,
+            ranked_orders.running_total,
+            ranked_orders.order_count,
+        )
+        .from_(ranked_orders)
+        .join(users, ranked_orders.user_id == users.id)
+        .where(
+            (users.status == "active") | (ranked_orders.order_count > 1),
+        )
+        .where(ranked_orders.total_rank <= 2)
+        .order_by(users.name, ranked_orders.total_rank, ranked_orders.id)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+
+    assert rows == [
+        ("Alice", 1, 120, 1, 120, 2),
+        ("Alice", 2, 50, 2, 170, 2),
+        ("Carol", 3, 200, 1, 200, 1),
+    ]
+
+
 def test_sqlite_union_all_compound_query(
     sqlite_db: sqlite3.Connection,
 ) -> None:
@@ -808,3 +877,537 @@ def test_sqlite_except_compound_query(
     rows = _fetch_rows(sqlite_db, query, params)
 
     assert sorted(rows) == [(2,), (4,), (5,)]
+
+
+def _create_sqlite_window_t0(connection: sqlite3.Connection) -> None:
+    connection.execute("CREATE TABLE t0(x INTEGER PRIMARY KEY, y TEXT)")
+    connection.executemany(
+        "INSERT INTO t0 VALUES (?, ?)",
+        [(1, "aaa"), (2, "ccc"), (3, "bbb")],
+    )
+    connection.commit()
+
+
+def _create_sqlite_window_t1(connection: sqlite3.Connection) -> None:
+    connection.execute("CREATE TABLE t1(a INTEGER PRIMARY KEY, b, c)")
+    connection.executemany(
+        "INSERT INTO t1 VALUES (?, ?, ?)",
+        [
+            (1, "A", "one"),
+            (2, "B", "two"),
+            (3, "C", "three"),
+            (4, "D", "one"),
+            (5, "E", "two"),
+            (6, "F", "three"),
+            (7, "G", "one"),
+        ],
+    )
+    connection.commit()
+
+
+def _create_sqlite_window_t2(connection: sqlite3.Connection) -> None:
+    connection.execute("CREATE TABLE t2(a, b)")
+    connection.executemany(
+        "INSERT INTO t2 VALUES (?, ?)",
+        [
+            ("a", "one"),
+            ("a", "two"),
+            ("a", "three"),
+            ("b", "four"),
+            ("c", "five"),
+            ("c", "six"),
+        ],
+    )
+    connection.commit()
+
+
+def test_sqlite_docs_row_number_ordered_window(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t0(sqlite_db)
+    t0 = Table("t0")
+
+    query, params = (
+        select(
+            t0.x,
+            t0.y,
+            func.row_number().over(order_by=t0.y).as_("row_number"),
+        )
+        .from_(t0)
+        .order_by(t0.x)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT x, y, row_number() OVER (ORDER BY y) AS row_number
+        FROM t0 ORDER BY x
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_two_named_windows(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t0(sqlite_db)
+    t0 = Table("t0")
+
+    query, params = (
+        select(
+            t0.x,
+            t0.y,
+            func.row_number().over("win1"),
+            func.rank().over("win2"),
+        )
+        .from_(t0)
+        .window(
+            "win1",
+            order_by=t0.y,
+            range_=Window.Range.between(
+                Window.Range.unbounded_preceding(),
+                Window.Range.current_row(),
+            ),
+        )
+        .window("win2", partition_by=t0.y, order_by=t0.x)
+        .order_by(t0.x)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT x, y, row_number() OVER win1, rank() OVER win2
+        FROM t0
+        WINDOW win1 AS (
+            ORDER BY y RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ),
+               win2 AS (PARTITION BY y ORDER BY x)
+        ORDER BY x
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_aggregate_rows_frame(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t1(sqlite_db)
+    t1 = Table("t1")
+
+    query, params = (
+        select(
+            t1.a,
+            t1.b,
+            func.group_concat(t1.b, ".")
+            .over(
+                order_by=t1.a,
+                rows=Window.Rows.between(
+                    Window.Rows.preceding(1),
+                    Window.Rows.following(1),
+                ),
+            )
+            .as_("group_concat"),
+        )
+        .from_(t1)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT a, b, group_concat(b, '.') OVER (
+          ORDER BY a ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
+        ) AS group_concat FROM t1
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_partition_by_range_following(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t1(sqlite_db)
+    t1 = Table("t1")
+
+    query, params = (
+        select(
+            t1.c,
+            t1.a,
+            t1.b,
+            func.group_concat(t1.b, ".")
+            .over(
+                partition_by=t1.c,
+                order_by=t1.a,
+                range_=Window.Range.between(
+                    Window.Range.current_row(),
+                    Window.Range.unbounded_following(),
+                ),
+            )
+            .as_("group_concat"),
+        )
+        .from_(t1)
+        .order_by(t1.c, t1.a)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT c, a, b, group_concat(b, '.') OVER (
+          PARTITION BY c ORDER BY a
+          RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+        ) AS group_concat
+        FROM t1 ORDER BY c, a
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_default_range_frame_with_peers(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t1(sqlite_db)
+    t1 = Table("t1")
+
+    query, params = (
+        select(
+            t1.a,
+            t1.b,
+            t1.c,
+            func.group_concat(t1.b, ".")
+            .over(order_by=t1.c)
+            .as_("group_concat"),
+        )
+        .from_(t1)
+        .order_by(t1.a)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT a, b, c,
+               group_concat(b, '.') OVER (ORDER BY c) AS group_concat
+        FROM t1 ORDER BY a
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_frame_boundaries_current_to_unbounded(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t1(sqlite_db)
+    t1 = Table("t1")
+
+    query, params = (
+        select(
+            t1.c,
+            t1.a,
+            t1.b,
+            func.group_concat(t1.b, ".")
+            .over(
+                order_by=(t1.c, t1.a),
+                rows=Window.Rows.between(
+                    Window.Rows.current_row(),
+                    Window.Rows.unbounded_following(),
+                ),
+            )
+            .as_("group_concat"),
+        )
+        .from_(t1)
+        .order_by(t1.c, t1.a)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT c, a, b, group_concat(b, '.') OVER (
+          ORDER BY c, a ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+        ) AS group_concat
+        FROM t1 ORDER BY c, a
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_exclude_clause_variants(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t1(sqlite_db)
+    t1 = Table("t1")
+    frame = Window.Groups.between(
+        Window.Groups.unbounded_preceding(),
+        Window.Groups.current_row(),
+    )
+
+    query, params = (
+        select(
+            t1.c,
+            t1.a,
+            t1.b,
+            func.group_concat(t1.b, ".")
+            .over(order_by=t1.c, groups=frame, exclude="NO OTHERS")
+            .as_("no_others"),
+            func.group_concat(t1.b, ".")
+            .over(order_by=t1.c, groups=frame, exclude="CURRENT ROW")
+            .as_("current_row"),
+            func.group_concat(t1.b, ".")
+            .over(order_by=t1.c, groups=frame, exclude="GROUP")
+            .as_("grp"),
+            func.group_concat(t1.b, ".")
+            .over(order_by=t1.c, groups=frame, exclude="TIES")
+            .as_("ties"),
+        )
+        .from_(t1)
+        .order_by(t1.c, t1.a)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT c, a, b,
+          group_concat(b, '.') OVER (
+            ORDER BY c GROUPS BETWEEN UNBOUNDED PRECEDING
+            AND CURRENT ROW EXCLUDE NO OTHERS
+          ) AS no_others,
+          group_concat(b, '.') OVER (
+            ORDER BY c GROUPS BETWEEN UNBOUNDED PRECEDING
+            AND CURRENT ROW EXCLUDE CURRENT ROW
+          ) AS current_row,
+          group_concat(b, '.') OVER (
+            ORDER BY c GROUPS BETWEEN UNBOUNDED PRECEDING
+            AND CURRENT ROW EXCLUDE GROUP
+          ) AS grp,
+          group_concat(b, '.') OVER (
+            ORDER BY c GROUPS BETWEEN UNBOUNDED PRECEDING
+            AND CURRENT ROW EXCLUDE TIES
+          ) AS ties
+        FROM t1 ORDER BY c, a
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_filter_clause(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t1(sqlite_db)
+    t1 = Table("t1")
+
+    query, params = (
+        select(
+            t1.c,
+            t1.a,
+            t1.b,
+            func.group_concat(t1.b, ".")
+            .filter(t1.c != "two")
+            .over(order_by=t1.a)
+            .as_("group_concat"),
+        )
+        .from_(t1)
+        .order_by(t1.a)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT c, a, b, group_concat(b, '.') FILTER (WHERE c!='two') OVER (
+          ORDER BY a
+        ) AS group_concat
+        FROM t1 ORDER BY a
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_ranking_functions(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t2(sqlite_db)
+    t2 = Table("t2")
+
+    query, params = (
+        select(
+            t2.a.as_("a") if hasattr(t2.a, "as_") else t2.a,
+            func.row_number().over("win").as_("row_number"),
+            func.rank().over("win").as_("rank"),
+            func.dense_rank().over("win").as_("dense_rank"),
+            func.percent_rank().over("win").as_("percent_rank"),
+            func.cume_dist().over("win").as_("cume_dist"),
+        )
+        .from_(t2)
+        .window("win", order_by=t2.a)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT a                        AS a,
+               row_number() OVER win    AS row_number,
+               rank() OVER win          AS rank,
+               dense_rank() OVER win    AS dense_rank,
+               percent_rank() OVER win  AS percent_rank,
+               cume_dist() OVER win     AS cume_dist
+        FROM t2
+        WINDOW win AS (ORDER BY a)
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_ntile_functions(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t2(sqlite_db)
+    t2 = Table("t2")
+
+    query, params = (
+        select(
+            t2.a,
+            t2.b,
+            func.ntile(2).over("win").as_("ntile_2"),
+            func.ntile(4).over("win").as_("ntile_4"),
+        )
+        .from_(t2)
+        .window("win", order_by=t2.a)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT a                        AS a,
+               b                        AS b,
+               ntile(2) OVER win        AS ntile_2,
+               ntile(4) OVER win        AS ntile_4
+        FROM t2
+        WINDOW win AS (ORDER BY a)
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_value_window_functions(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t1(sqlite_db)
+    t1 = Table("t1")
+
+    query, params = (
+        select(
+            t1.b.as_("b") if hasattr(t1.b, "as_") else t1.b,
+            func.lead(t1.b, 2, "n/a").over("win").as_("lead"),
+            func.lag(t1.b).over("win").as_("lag"),
+            func.first_value(t1.b).over("win").as_("first_value"),
+            func.last_value(t1.b).over("win").as_("last_value"),
+            func.nth_value(t1.b, 3).over("win").as_("nth_value_3"),
+        )
+        .from_(t1)
+        .window(
+            "win",
+            order_by=t1.b,
+            rows=Window.Rows.between(
+                Window.Rows.unbounded_preceding(),
+                Window.Rows.current_row(),
+            ),
+        )
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT b                          AS b,
+               lead(b, 2, 'n/a') OVER win AS lead,
+               lag(b) OVER win            AS lag,
+               first_value(b) OVER win    AS first_value,
+               last_value(b) OVER win     AS last_value,
+               nth_value(b, 3) OVER win   AS nth_value_3
+        FROM t1
+        WINDOW win AS (
+            ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        )
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_sqlite_docs_window_chaining(
+    sqlite_db: sqlite3.Connection,
+) -> None:
+    _create_sqlite_window_t1(sqlite_db)
+    t1 = Table("t1")
+
+    query, params = (
+        select(
+            func.group_concat(t1.b, ".")
+            .over(
+                Window(
+                    base="win",
+                    rows=Window.Rows.between(
+                        Window.Rows.unbounded_preceding(),
+                        Window.Rows.current_row(),
+                    ),
+                ),
+            )
+            .as_("group_concat"),
+        )
+        .from_(t1)
+        .window("win", partition_by=t1.a, order_by=t1.c)
+        .compile()
+    )
+
+    rows = _fetch_rows(sqlite_db, query, params)
+    expected = _fetch_rows(
+        sqlite_db,
+        """
+        SELECT group_concat(b, '.') OVER (
+          win ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS group_concat
+        FROM t1
+        WINDOW win AS (PARTITION BY a ORDER BY c)
+        """,
+        (),
+    )
+
+    assert rows == expected

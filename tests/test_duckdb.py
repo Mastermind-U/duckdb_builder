@@ -7,6 +7,7 @@ import pytest
 
 from sql_fusion import (
     Table,
+    Window,
     delete,
     func,
     insert,
@@ -997,3 +998,572 @@ def test_delete_user_row(duckdb_db: Any) -> None:
     )
 
     assert rows == [(0,)]
+
+
+def test_duckdb_complex_window_query(duckdb_db: Any) -> None:
+    orders = Table("orders")
+    users = Table("users")
+    ranked_orders = Table(
+        select(
+            orders.user_id,
+            orders.id,
+            orders.total,
+            func.rank().over("user_total_order").as_("total_rank"),
+            func.sum(orders.total)
+            .over("user_running_id")
+            .as_(
+                "running_total",
+            ),
+            func.count("*")
+            .over(partition_by=orders.user_id)
+            .as_(
+                "order_count",
+            ),
+        )
+        .from_(orders)
+        .window(
+            "user_total_order",
+            partition_by=orders.user_id,
+            order_by=orders.total,
+            descending=True,
+        )
+        .window(
+            "user_running_id",
+            partition_by=orders.user_id,
+            order_by=orders.id,
+            rows=Window.Rows.between(
+                Window.Rows.unbounded_preceding(),
+                Window.Rows.current_row(),
+            ),
+        ),
+    )
+
+    query, params = (
+        select(
+            users.name,
+            ranked_orders.id,
+            ranked_orders.total,
+            ranked_orders.total_rank,
+            ranked_orders.running_total,
+            ranked_orders.order_count,
+        )
+        .from_(ranked_orders)
+        .join(users, ranked_orders.user_id == users.id)
+        .where(
+            (users.status == "active") | (ranked_orders.order_count > 1),
+        )
+        .where(ranked_orders.total_rank <= 2)
+        .order_by(users.name, ranked_orders.total_rank, ranked_orders.id)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+
+    assert rows == [
+        ("Alice", 1, 120, 1, 120, 2),
+        ("Alice", 2, 50, 2, 170, 2),
+        ("Carol", 3, 200, 1, 200, 1),
+    ]
+
+
+def _create_generation_history(connection: Any) -> None:
+    connection.execute(
+        """
+        CREATE TABLE "Generation History" (
+            "MWh" INTEGER NOT NULL,
+            "Date" DATE NOT NULL,
+            "Plant" TEXT NOT NULL
+        )
+        """,
+    )
+    connection.executemany(
+        'INSERT INTO "Generation History" VALUES (?, ?, ?)',
+        [
+            (564337, "2019-01-02", "Boston"),
+            (507405, "2019-01-03", "Boston"),
+            (528523, "2019-01-04", "Boston"),
+            (469538, "2019-01-05", "Boston"),
+            (474163, "2019-01-06", "Boston"),
+            (507213, "2019-01-07", "Boston"),
+            (613040, "2019-01-08", "Boston"),
+            (582588, "2019-01-09", "Boston"),
+            (499506, "2019-01-10", "Boston"),
+            (482014, "2019-01-11", "Boston"),
+            (486134, "2019-01-12", "Boston"),
+            (531518, "2019-01-13", "Boston"),
+            (118860, "2019-01-02", "Worcester"),
+            (101977, "2019-01-03", "Worcester"),
+            (106054, "2019-01-04", "Worcester"),
+            (92182, "2019-01-05", "Worcester"),
+            (94492, "2019-01-06", "Worcester"),
+            (99932, "2019-01-07", "Worcester"),
+            (118854, "2019-01-08", "Worcester"),
+            (113506, "2019-01-09", "Worcester"),
+            (96644, "2019-01-10", "Worcester"),
+            (93806, "2019-01-11", "Worcester"),
+            (98963, "2019-01-12", "Worcester"),
+            (107170, "2019-01-13", "Worcester"),
+        ],
+    )
+
+
+def test_duckdb_docs_generation_history_row_number(duckdb_db: Any) -> None:
+    _create_generation_history(duckdb_db)
+    history = Table("Generation History")
+
+    query, params = (
+        select(
+            history.Plant,
+            history.Date,
+            func.row_number()
+            .over(partition_by=history.Plant, order_by=history.Date)
+            .as_("Row"),
+        )
+        .from_(history)
+        .order_by(history.Plant, history.Date)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+    expected = _fetch_rows(
+        duckdb_db,
+        """
+        SELECT
+            "Plant",
+            "Date",
+            row_number() OVER (
+                PARTITION BY "Plant" ORDER BY "Date"
+            ) AS "Row"
+        FROM "Generation History"
+        ORDER BY 1, 2
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_duckdb_docs_rows_between_window(duckdb_db: Any) -> None:
+    duckdb_db.execute(
+        """
+        CREATE TABLE results (
+            points INTEGER NOT NULL
+        )
+        """,
+    )
+    duckdb_db.executemany(
+        "INSERT INTO results VALUES (?)",
+        [(10,), (20,), (30,), (40,)],
+    )
+    results = Table("results")
+
+    query, params = (
+        select(
+            results.points,
+            func.sum(results.points)
+            .over(
+                rows=Window.Rows.between(
+                    Window.Rows.preceding(1),
+                    Window.Rows.following(1),
+                ),
+            )
+            .as_("we"),
+        )
+        .from_(results)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+    expected = _fetch_rows(
+        duckdb_db,
+        """
+        SELECT points,
+            sum(points) OVER (
+                ROWS BETWEEN 1 PRECEDING
+                         AND 1 FOLLOWING) AS we
+        FROM results
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_duckdb_docs_range_window_exclude_current_row(
+    duckdb_db: Any,
+) -> None:
+    duckdb_db.execute(
+        """
+        CREATE TABLE results (
+            event TEXT NOT NULL,
+            date DATE NOT NULL,
+            athlete TEXT NOT NULL,
+            time DOUBLE NOT NULL
+        )
+        """,
+    )
+    duckdb_db.executemany(
+        "INSERT INTO results VALUES (?, ?, ?, ?)",
+        [
+            ("100m", "2024-01-01", "Alice", 12.0),
+            ("100m", "2024-01-05", "Bob", 11.5),
+            ("100m", "2024-01-20", "Carol", 11.0),
+            ("200m", "2024-01-03", "Alice", 24.0),
+            ("200m", "2024-01-11", "Bob", 23.0),
+        ],
+    )
+    results = Table("results")
+
+    query, params = (
+        select(
+            results.event,
+            results.date,
+            results.athlete,
+            func.avg(results.time).over("w").as_("recent"),
+        )
+        .from_(results)
+        .window(
+            "w",
+            partition_by=results.event,
+            order_by=results.date,
+            range_=Window.Range.between(
+                Window.Range.interval_preceding(10, "DAYS"),
+                Window.Range.interval_following(10, "DAYS"),
+            ),
+            exclude="CURRENT ROW",
+        )
+        .order_by(results.event, results.date, results.athlete)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+    expected = _fetch_rows(
+        duckdb_db,
+        """
+        SELECT
+            event,
+            date,
+            athlete,
+            avg(time) OVER w AS recent,
+        FROM results
+        WINDOW w AS (
+            PARTITION BY event
+            ORDER BY date
+            RANGE BETWEEN INTERVAL 10 DAYS PRECEDING
+                      AND INTERVAL 10 DAYS FOLLOWING
+                EXCLUDE CURRENT ROW
+        )
+        ORDER BY event, date, athlete
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_duckdb_docs_generation_history_range_framing_average(
+    duckdb_db: Any,
+) -> None:
+    _create_generation_history(duckdb_db)
+    history = Table("Generation History")
+
+    query, params = (
+        select(
+            history.Plant,
+            history.Date,
+            func.avg(history.MWh)
+            .over(
+                partition_by=history.Plant,
+                order_by=history.Date,
+                range_=Window.Range.between(
+                    Window.Range.interval_preceding(3, "DAYS"),
+                    Window.Range.interval_following(3, "DAYS"),
+                ),
+            )
+            .as_("MWh 7-day Moving Average"),
+        )
+        .from_(history)
+        .order_by(history.Plant, history.Date)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+    expected = _fetch_rows(
+        duckdb_db,
+        """
+        SELECT "Plant", "Date",
+            avg("MWh") OVER (
+                PARTITION BY "Plant"
+                ORDER BY "Date" ASC
+                RANGE BETWEEN INTERVAL 3 DAYS PRECEDING
+                          AND INTERVAL 3 DAYS FOLLOWING)
+                AS "MWh 7-day Moving Average"
+        FROM "Generation History"
+        ORDER BY 1, 2
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_duckdb_docs_generation_history_groups_framing(
+    duckdb_db: Any,
+) -> None:
+    _create_generation_history(duckdb_db)
+    history = Table("Generation History")
+
+    query, params = (
+        select(
+            history.Date,
+            history.Plant,
+            func.avg(history.MWh)
+            .over(
+                order_by=history.Date,
+                groups=Window.Groups.between(
+                    Window.Groups.preceding(3),
+                    Window.Groups.following(3),
+                ),
+            )
+            .as_("MWh 7-day Moving Average"),
+        )
+        .from_(history)
+        .order_by(history.Date, history.Plant)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+    expected = _fetch_rows(
+        duckdb_db,
+        """
+        SELECT "Date", "Plant",
+            avg("MWh") OVER (
+                ORDER BY "Date" ASC
+                GROUPS BETWEEN 3 PRECEDING
+                       AND 3 FOLLOWING)
+                AS "MWh 7-day Moving Average"
+        FROM "Generation History"
+        ORDER BY 1, 2
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_duckdb_docs_generation_history_seven_day_windows(
+    duckdb_db: Any,
+) -> None:
+    _create_generation_history(duckdb_db)
+    history = Table("Generation History")
+
+    query, params = (
+        select(
+            history.Plant,
+            history.Date,
+            func.min(history.MWh)
+            .over("seven")
+            .as_(
+                "MWh 7-day Moving Minimum",
+            ),
+            func.avg(history.MWh)
+            .over("seven")
+            .as_(
+                "MWh 7-day Moving Average",
+            ),
+            func.max(history.MWh)
+            .over("seven")
+            .as_(
+                "MWh 7-day Moving Maximum",
+            ),
+        )
+        .from_(history)
+        .window(
+            "seven",
+            partition_by=history.Plant,
+            order_by=history.Date,
+            range_=Window.Range.between(
+                Window.Range.interval_preceding(3, "DAYS"),
+                Window.Range.interval_following(3, "DAYS"),
+            ),
+        )
+        .order_by(history.Plant, history.Date)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+    expected = _fetch_rows(
+        duckdb_db,
+        """
+        SELECT "Plant", "Date",
+            min("MWh") OVER seven AS "MWh 7-day Moving Minimum",
+            avg("MWh") OVER seven AS "MWh 7-day Moving Average",
+            max("MWh") OVER seven AS "MWh 7-day Moving Maximum"
+        FROM "Generation History"
+        WINDOW seven AS (
+            PARTITION BY "Plant"
+            ORDER BY "Date" ASC
+            RANGE BETWEEN INTERVAL 3 DAYS PRECEDING
+                      AND INTERVAL 3 DAYS FOLLOWING)
+        ORDER BY 1, 2
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_duckdb_docs_generation_history_multiple_named_windows(
+    duckdb_db: Any,
+) -> None:
+    _create_generation_history(duckdb_db)
+    history = Table("Generation History")
+
+    query, params = (
+        select(
+            history.Plant,
+            history.Date,
+            func.min(history.MWh)
+            .over("seven")
+            .as_(
+                "MWh 7-day Moving Minimum",
+            ),
+            func.avg(history.MWh)
+            .over("seven")
+            .as_(
+                "MWh 7-day Moving Average",
+            ),
+            func.max(history.MWh)
+            .over("seven")
+            .as_(
+                "MWh 7-day Moving Maximum",
+            ),
+            func.min(history.MWh)
+            .over("three")
+            .as_(
+                "MWh 3-day Moving Minimum",
+            ),
+            func.avg(history.MWh)
+            .over("three")
+            .as_(
+                "MWh 3-day Moving Average",
+            ),
+            func.max(history.MWh)
+            .over("three")
+            .as_(
+                "MWh 3-day Moving Maximum",
+            ),
+        )
+        .from_(history)
+        .window(
+            "seven",
+            partition_by=history.Plant,
+            order_by=history.Date,
+            range_=Window.Range.between(
+                Window.Range.interval_preceding(3, "DAYS"),
+                Window.Range.interval_following(3, "DAYS"),
+            ),
+        )
+        .window(
+            "three",
+            partition_by=history.Plant,
+            order_by=history.Date,
+            range_=Window.Range.between(
+                Window.Range.interval_preceding(1, "DAYS"),
+                Window.Range.interval_following(1, "DAYS"),
+            ),
+        )
+        .order_by(history.Plant, history.Date)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+    expected = _fetch_rows(
+        duckdb_db,
+        """
+        SELECT "Plant", "Date",
+            min("MWh") OVER seven AS "MWh 7-day Moving Minimum",
+            avg("MWh") OVER seven AS "MWh 7-day Moving Average",
+            max("MWh") OVER seven AS "MWh 7-day Moving Maximum",
+            min("MWh") OVER three AS "MWh 3-day Moving Minimum",
+            avg("MWh") OVER three AS "MWh 3-day Moving Average",
+            max("MWh") OVER three AS "MWh 3-day Moving Maximum"
+        FROM "Generation History"
+        WINDOW
+            seven AS (
+                PARTITION BY "Plant"
+                ORDER BY "Date" ASC
+                RANGE BETWEEN INTERVAL 3 DAYS PRECEDING
+                          AND INTERVAL 3 DAYS FOLLOWING),
+            three AS (
+                PARTITION BY "Plant"
+                ORDER BY "Date" ASC
+                RANGE BETWEEN INTERVAL 1 DAYS PRECEDING
+                AND INTERVAL 1 DAYS FOLLOWING)
+        ORDER BY 1, 2
+        """,
+        (),
+    )
+
+    assert rows == expected
+
+
+def test_duckdb_docs_generation_history_seven_day_iqr(
+    duckdb_db: Any,
+) -> None:
+    _create_generation_history(duckdb_db)
+    history = Table("Generation History")
+
+    query, params = (
+        select(
+            history.Plant,
+            history.Date,
+            func.min(history.MWh)
+            .over("seven")
+            .as_(
+                "MWh 7-day Moving Minimum",
+            ),
+            func.quantile_cont(history.MWh, [0.25, 0.5, 0.75])
+            .over("seven")
+            .as_("MWh 7-day Moving IQR"),
+            func.max(history.MWh)
+            .over("seven")
+            .as_(
+                "MWh 7-day Moving Maximum",
+            ),
+        )
+        .from_(history)
+        .window(
+            "seven",
+            partition_by=history.Plant,
+            order_by=history.Date,
+            range_=Window.Range.between(
+                Window.Range.interval_preceding(3, "DAYS"),
+                Window.Range.interval_following(3, "DAYS"),
+            ),
+        )
+        .order_by(history.Plant, history.Date)
+        .compile()
+    )
+
+    rows = _fetch_rows(duckdb_db, query, params)
+    expected = _fetch_rows(
+        duckdb_db,
+        """
+        SELECT "Plant", "Date",
+            min("MWh") OVER seven AS "MWh 7-day Moving Minimum",
+            quantile_cont("MWh", [0.25, 0.5, 0.75]) OVER seven
+                AS "MWh 7-day Moving IQR",
+            max("MWh") OVER seven AS "MWh 7-day Moving Maximum",
+        FROM "Generation History"
+        WINDOW seven AS (
+            PARTITION BY "Plant"
+            ORDER BY "Date" ASC
+            RANGE BETWEEN INTERVAL 3 DAYS PRECEDING
+                      AND INTERVAL 3 DAYS FOLLOWING)
+        ORDER BY 1, 2
+        """,
+        (),
+    )
+
+    assert rows == expected

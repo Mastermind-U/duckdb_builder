@@ -7,23 +7,33 @@ from sql_fusion.composite_table import (
     AliasRegistry,
     Column,
     Condition,
+    FilteredFunctionCall,
     FunctionCall,
     Table,
+    Window,
+    WindowExpression,
+    WindowFrameSpec,
+    WindowFunctionCall,
 )
 from sql_fusion.operators import EqualOperator
 
+SelectExpression = (
+    Column | Alias | FunctionCall | FilteredFunctionCall | WindowFunctionCall
+)
+
 
 class select(AbstractQuery):
-    def __init__(self, *columns: Column | Alias | FunctionCall) -> None:
+    def __init__(self, *columns: SelectExpression) -> None:
         super().__init__(table=None, columns=columns)
         self._having_condition: Condition | None = None
         self._group_by_columns: tuple[Column, ...] = ()
         self._group_by_type: str = "normal"
         self._grouping_sets: tuple[tuple[Column, ...], ...] = ()
         self._order_by_columns: tuple[
-            tuple[Column | Alias | FunctionCall, bool],
+            tuple[SelectExpression, bool],
             ...,
         ] = ()
+        self._windows: tuple[Window, ...] = ()
         self._joins: list[
             tuple[str, Table, Condition | None, bool]
         ] = []  # (join_type, table, condition, is_outer)
@@ -52,7 +62,10 @@ class select(AbstractQuery):
             col_parts: list[str] = []
 
             for col in self._columns:
-                if isinstance(col, FunctionCall):
+                if isinstance(
+                    col,
+                    (FunctionCall, FilteredFunctionCall, WindowFunctionCall),
+                ):
                     # Handle function calls
                     func_sql, func_params = col.to_sql(
                         registry,
@@ -116,10 +129,31 @@ class select(AbstractQuery):
             )
             params.extend(having_params)
 
+        if self._windows:
+            window_parts: list[str] = []
+            for window in self._windows:
+                window_sql, window_params = window.to_sql(
+                    registry,
+                    include_name=True,
+                )
+                window_parts.append(window_sql)
+                params.extend(window_params)
+
+            query_parts.append(
+                self._build_clause(
+                    "WINDOW",
+                    "WINDOW",
+                    ", ".join(window_parts),
+                ),
+            )
+
         if self._order_by_columns:
             order_parts: list[str] = []
             for col, descending in self._order_by_columns:
-                if isinstance(col, FunctionCall):
+                if isinstance(
+                    col,
+                    (FunctionCall, FilteredFunctionCall, WindowFunctionCall),
+                ):
                     col_sql, col_params = col.to_sql(registry)
                     params.extend(col_params)
                 elif isinstance(col, Alias):
@@ -371,7 +405,7 @@ class select(AbstractQuery):
 
     def order_by(
         self,
-        *columns: Column | Alias | FunctionCall,
+        *columns: SelectExpression,
         descending: bool = False,
     ) -> Self:
         if not columns:
@@ -381,6 +415,55 @@ class select(AbstractQuery):
         qs._order_by_columns = self._order_by_columns + tuple(
             (column, descending) for column in columns
         )
+        return qs
+
+    def window(  # noqa: PLR0913
+        self,
+        name: Window | Alias | str,
+        *,
+        base: Alias | str | None = None,
+        partition_by: WindowExpression | tuple[WindowExpression, ...] = (),
+        order_by: (
+            WindowExpression
+            | tuple[WindowExpression, ...]
+            | tuple[tuple[WindowExpression, bool], ...]
+        ) = (),
+        descending: bool = False,
+        rows: WindowFrameSpec | None = None,
+        range_: WindowFrameSpec | None = None,
+        groups: WindowFrameSpec | None = None,
+        exclude: str | None = None,
+    ) -> Self:
+        """Add a named WINDOW clause."""
+        if isinstance(name, Window):
+            if (
+                Window._has_expressions(partition_by)
+                or Window._has_order_by(order_by)
+                or base is not None
+                or rows is not None
+                or range_ is not None
+                or groups is not None
+                or exclude is not None
+            ):
+                raise ValueError(
+                    "Window objects cannot include inline window parts",
+                )
+            window = name
+        else:
+            window = Window(
+                name,
+                base=base,
+                partition_by=partition_by,
+                order_by=order_by,
+                descending=descending,
+                rows=rows,
+                range_=range_,
+                groups=groups,
+                exclude=exclude,
+            )
+
+        qs = copy(self)
+        qs._windows = (*self._windows, window)
         return qs
 
     def distinct(self) -> Self:

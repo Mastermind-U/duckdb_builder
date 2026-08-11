@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from copy import copy
-from typing import Any, Callable, Self
+from typing import Any, Callable, ClassVar, Self, TypeAlias, cast
 
 from sql_fusion.operators import (
     AbstractOperator,
@@ -24,6 +24,10 @@ CompileExpression = Callable[
     tuple[str, tuple[Any, ...]],
 ]
 OperatorFactory = Callable[[str], AbstractOperator]
+WindowFrameBoundary: TypeAlias = "str | FrameBoundary"  # noqa: UP040
+WindowFrameSpec: TypeAlias = (  # noqa: UP040
+    "WindowFrameBoundary | tuple[WindowFrameBoundary, WindowFrameBoundary]"
+)
 
 
 class AliasRegistry:
@@ -59,10 +63,24 @@ class AbstractQuery:
     def __init__(
         self,
         table: Table | None,
-        columns: tuple[Column | Alias | FunctionCall, ...] = (),
+        columns: tuple[
+            Column
+            | Alias
+            | FunctionCall
+            | FilteredFunctionCall
+            | WindowFunctionCall,
+            ...,
+        ] = (),
     ) -> None:
         self._table: Table | None = table
-        self._columns: tuple[Column | Alias | FunctionCall, ...] = columns
+        self._columns: tuple[
+            Column
+            | Alias
+            | FunctionCall
+            | FilteredFunctionCall
+            | WindowFunctionCall,
+            ...,
+        ] = columns
         self._where_condition: Condition | None = None
         self._ctes: list[tuple[str, AbstractQuery]] = []
         self._with_recursive: bool = False
@@ -387,7 +405,10 @@ class BinaryExpression(ComparableExpression):
         if isinstance(operand, BinaryExpression):
             sql, params = operand.to_sql(alias_registry)
             return f"({sql})", params
-        if isinstance(operand, FunctionCall):
+        if isinstance(
+            operand,
+            (FunctionCall, FilteredFunctionCall, WindowFunctionCall),
+        ):
             return operand.to_sql(alias_registry)
         if isinstance(operand, Column | Alias):
             return operand.get_ref(alias_registry), tuple()
@@ -438,10 +459,18 @@ class Condition:
 
     @staticmethod
     def _render_expression(
-        value: ComparableExpression | FunctionCall,
+        value: ComparableExpression | FunctionCall | WindowFunctionCall,
         alias_registry: AliasRegistry,
     ) -> tuple[str, tuple[Any, ...]]:
-        if isinstance(value, (BinaryExpression, FunctionCall)):
+        if isinstance(
+            value,
+            (
+                BinaryExpression,
+                FunctionCall,
+                FilteredFunctionCall,
+                WindowFunctionCall,
+            ),
+        ):
             return value.to_sql(alias_registry)
         return value.get_ref(alias_registry), tuple()
 
@@ -558,6 +587,39 @@ class FunctionCall(ComparableExpression):
         result._alias = alias if isinstance(alias, Alias) else Alias(alias)
         return result
 
+    def filter(self, condition: Condition) -> FilteredFunctionCall:
+        """Attach a SQL FILTER clause to the function call."""
+        return FilteredFunctionCall(self, condition)
+
+    def over(  # noqa: PLR0913
+        self,
+        window: Window | Alias | str | None = None,
+        *,
+        partition_by: WindowExpression | tuple[WindowExpression, ...] = (),
+        order_by: (
+            WindowExpression
+            | tuple[WindowExpression, ...]
+            | tuple[tuple[WindowExpression, bool], ...]
+        ) = (),
+        descending: bool = False,
+        rows: WindowFrameSpec | None = None,
+        range_: WindowFrameSpec | None = None,
+        groups: WindowFrameSpec | None = None,
+        exclude: str | None = None,
+    ) -> WindowFunctionCall:
+        """Apply an OVER clause to this function call."""
+        window_spec = Window.from_over_parts(
+            window,
+            partition_by=partition_by,
+            order_by=order_by,
+            descending=descending,
+            rows=rows,
+            range_=range_,
+            groups=groups,
+            exclude=exclude,
+        )
+        return WindowFunctionCall(self, window_spec)
+
     def get_alias(self) -> Alias | None:
         return self._alias
 
@@ -643,6 +705,462 @@ class FunctionRegistry:
 
 
 func = FunctionRegistry()
+
+WindowExpression = ComparableExpression | FunctionCall
+
+
+class FilteredFunctionCall(ComparableExpression):
+    """Represents a SQL function call with a FILTER clause."""
+
+    def __init__(self, function: FunctionCall, condition: Condition) -> None:
+        self.function: FunctionCall = function
+        self.condition: Condition = condition
+        self._alias: Alias | None = None
+
+    def as_(self, alias: Alias | str) -> FilteredFunctionCall:
+        result = copy(self)
+        result._alias = alias if isinstance(alias, Alias) else Alias(alias)
+        return result
+
+    def over(  # noqa: PLR0913
+        self,
+        window: Window | Alias | str | None = None,
+        *,
+        partition_by: WindowExpression | tuple[WindowExpression, ...] = (),
+        order_by: (
+            WindowExpression
+            | tuple[WindowExpression, ...]
+            | tuple[tuple[WindowExpression, bool], ...]
+        ) = (),
+        descending: bool = False,
+        rows: WindowFrameSpec | None = None,
+        range_: WindowFrameSpec | None = None,
+        groups: WindowFrameSpec | None = None,
+        exclude: str | None = None,
+    ) -> WindowFunctionCall:
+        window_spec = Window.from_over_parts(
+            window,
+            partition_by=partition_by,
+            order_by=order_by,
+            descending=descending,
+            rows=rows,
+            range_=range_,
+            groups=groups,
+            exclude=exclude,
+        )
+        return WindowFunctionCall(self, window_spec)
+
+    def get_alias(self) -> Alias | None:
+        return self._alias
+
+    def to_sql(
+        self,
+        alias_registry: AliasRegistry,
+        *,
+        include_alias: bool = False,
+    ) -> tuple[str, tuple[Any, ...]]:
+        function_sql, function_params = self.function.to_sql(alias_registry)
+        condition_sql, condition_params = self.condition.to_sql(
+            alias_registry,
+        )
+        sql = f"{function_sql} FILTER (WHERE {condition_sql})"
+        if include_alias and self._alias is not None:
+            sql = f"{sql} AS {self._alias.get_ref(alias_registry)}"
+        return sql, function_params + condition_params
+
+    def get_ref(self, alias_registry: AliasRegistry) -> str:
+        return self.to_sql(alias_registry)[0]
+
+    def __repr__(self) -> str:
+        if self._alias is None:
+            return f"FilteredFunctionCall({self.function!r})"
+        return f"FilteredFunctionCall({self.function!r} AS {self._alias!r})"
+
+    def __hash__(self) -> int:
+        raise TypeError(f"unhashable type: '{type(self).__name__}'")
+
+
+class FrameBoundary:
+    """Represents a SQL window frame boundary."""
+
+    def __init__(self, sql: str) -> None:
+        self.sql: str = sql
+
+    def to_sql(self) -> str:
+        return self.sql
+
+    def __str__(self) -> str:
+        return self.to_sql()
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.sql!r})"
+
+
+class _FrameFactory:
+    keyword: ClassVar[str]
+
+    @classmethod
+    def between(
+        cls,
+        start: WindowFrameBoundary,
+        end: WindowFrameBoundary,
+    ) -> tuple[WindowFrameBoundary, WindowFrameBoundary]:
+        return (start, end)
+
+    @classmethod
+    def unbounded_preceding(cls) -> FrameBoundary:
+        return FrameBoundary("UNBOUNDED PRECEDING")
+
+    @classmethod
+    def unbounded_following(cls) -> FrameBoundary:
+        return FrameBoundary("UNBOUNDED FOLLOWING")
+
+    @classmethod
+    def current_row(cls) -> FrameBoundary:
+        return FrameBoundary("CURRENT ROW")
+
+    @classmethod
+    def preceding(cls, value: int) -> FrameBoundary:
+        return FrameBoundary(f"{value} PRECEDING")
+
+    @classmethod
+    def following(cls, value: int) -> FrameBoundary:
+        return FrameBoundary(f"{value} FOLLOWING")
+
+    @classmethod
+    def interval_preceding(cls, value: int, unit: str) -> FrameBoundary:
+        return FrameBoundary(f"INTERVAL {value} {unit} PRECEDING")
+
+    @classmethod
+    def interval_following(cls, value: int, unit: str) -> FrameBoundary:
+        return FrameBoundary(f"INTERVAL {value} {unit} FOLLOWING")
+
+
+class Rows(_FrameFactory):
+    """Factory for ROWS window frame boundaries."""
+
+    keyword = "ROWS"
+
+
+class Range(_FrameFactory):
+    """Factory for RANGE window frame boundaries."""
+
+    keyword = "RANGE"
+
+
+class Groups(_FrameFactory):
+    """Factory for GROUPS window frame boundaries."""
+
+    keyword = "GROUPS"
+
+
+class Window:
+    """Represents a SQL window specification."""
+
+    Rows: ClassVar[type[Rows]] = Rows
+    Range: ClassVar[type[Range]] = Range
+    Groups: ClassVar[type[Groups]] = Groups
+
+    def __init__(  # noqa: PLR0913
+        self,
+        name: Alias | str | None = None,
+        *,
+        base: Alias | str | None = None,
+        partition_by: WindowExpression | tuple[WindowExpression, ...] = (),
+        order_by: (
+            WindowExpression
+            | tuple[WindowExpression, ...]
+            | tuple[tuple[WindowExpression, bool], ...]
+        ) = (),
+        descending: bool = False,
+        rows: WindowFrameSpec | None = None,
+        range_: WindowFrameSpec | None = None,
+        groups: WindowFrameSpec | None = None,
+        exclude: str | None = None,
+    ) -> None:
+        frame_count = sum(
+            frame is not None for frame in (rows, range_, groups)
+        )
+        if frame_count > 1:
+            raise ValueError("Only one frame type can be used")
+
+        self.name: Alias | None = (
+            name
+            if isinstance(name, Alias)
+            else Alias(name)
+            if name is not None
+            else None
+        )
+        self.base: Alias | None = (
+            base
+            if isinstance(base, Alias)
+            else Alias(base)
+            if base is not None
+            else None
+        )
+        self.partition_by: tuple[WindowExpression, ...] = (
+            self._normalize_expressions(partition_by)
+        )
+        self.order_by: tuple[tuple[WindowExpression, bool], ...] = (
+            self._normalize_order_by(order_by, descending=descending)
+        )
+        self.frame_type: str | None = None
+        if rows is not None:
+            self.frame_type = "ROWS"
+        elif range_ is not None:
+            self.frame_type = "RANGE"
+        elif groups is not None:
+            self.frame_type = "GROUPS"
+        self.frame: WindowFrameSpec | None = rows or range_ or groups
+        self.exclude: str | None = exclude
+
+    @classmethod
+    def from_over_parts(  # noqa: PLR0913
+        cls,
+        window: Window | Alias | str | None = None,
+        *,
+        partition_by: WindowExpression | tuple[WindowExpression, ...] = (),
+        order_by: (
+            WindowExpression
+            | tuple[WindowExpression, ...]
+            | tuple[tuple[WindowExpression, bool], ...]
+        ) = (),
+        descending: bool = False,
+        rows: WindowFrameSpec | None = None,
+        range_: WindowFrameSpec | None = None,
+        groups: WindowFrameSpec | None = None,
+        exclude: str | None = None,
+    ) -> Window:
+        has_inline_parts = (
+            cls._has_expressions(partition_by)
+            or cls._has_order_by(order_by)
+            or rows is not None
+            or range_ is not None
+            or groups is not None
+            or exclude is not None
+        )
+        if isinstance(window, Window):
+            if has_inline_parts:
+                raise ValueError(
+                    "Window object references cannot include inline parts",
+                )
+            if window.name is None:
+                return window
+            return Window(name=window.name)
+
+        if window is None:
+            return Window(
+                partition_by=partition_by,
+                order_by=order_by,
+                descending=descending,
+                rows=rows,
+                range_=range_,
+                groups=groups,
+                exclude=exclude,
+            )
+
+        if has_inline_parts:
+            raise ValueError(
+                "Named window references cannot include inline window parts",
+            )
+        return Window(name=window)
+
+    @staticmethod
+    def _has_expressions(
+        expressions: WindowExpression | tuple[WindowExpression, ...],
+    ) -> bool:
+        return not (isinstance(expressions, tuple) and not expressions)
+
+    @staticmethod
+    def _has_order_by(
+        expressions: (
+            WindowExpression
+            | tuple[WindowExpression, ...]
+            | tuple[tuple[WindowExpression, bool], ...]
+        ),
+    ) -> bool:
+        return not (isinstance(expressions, tuple) and not expressions)
+
+    @staticmethod
+    def _normalize_expressions(
+        expressions: WindowExpression | tuple[WindowExpression, ...],
+    ) -> tuple[WindowExpression, ...]:
+        if isinstance(expressions, tuple):
+            return expressions
+        return (expressions,)
+
+    @staticmethod
+    def _normalize_order_by(
+        expressions: (
+            WindowExpression
+            | tuple[WindowExpression, ...]
+            | tuple[tuple[WindowExpression, bool], ...]
+        ),
+        *,
+        descending: bool,
+    ) -> tuple[tuple[WindowExpression, bool], ...]:
+        if isinstance(expressions, tuple):
+            if not expressions:
+                return ()
+            if all(isinstance(item, tuple) for item in expressions):
+                typed_expressions = cast(
+                    "tuple[tuple[WindowExpression, bool], ...]",
+                    expressions,
+                )
+                order_by_parts: list[tuple[WindowExpression, bool]] = []
+                for expression, item_descending in typed_expressions:
+                    order_by_parts.append((expression, item_descending))
+                return tuple(order_by_parts)
+
+            typed_order_expressions = cast(
+                "tuple[WindowExpression, ...]",
+                expressions,
+            )
+            order_by_parts = []
+            for expression in typed_order_expressions:
+                order_by_parts.append((expression, descending))
+            return tuple(order_by_parts)
+        return ((expressions, descending),)
+
+    @staticmethod
+    def _render_expression(
+        expression: WindowExpression,
+        alias_registry: AliasRegistry,
+    ) -> tuple[str, tuple[Any, ...]]:
+        if isinstance(expression, (FunctionCall, WindowFunctionCall)):
+            return expression.to_sql(alias_registry)
+        return expression.get_ref(alias_registry), tuple()
+
+    @staticmethod
+    def _render_frame(
+        frame_type: str,
+        frame: WindowFrameSpec,
+    ) -> str:
+        if isinstance(frame, tuple):
+            start = Window._render_frame_boundary(frame[0])
+            end = Window._render_frame_boundary(frame[1])
+            return f"{frame_type} BETWEEN {start} AND {end}"
+        return f"{frame_type} {Window._render_frame_boundary(frame)}"
+
+    @staticmethod
+    def _render_frame_boundary(boundary: WindowFrameBoundary) -> str:
+        if isinstance(boundary, FrameBoundary):
+            return boundary.to_sql()
+        return boundary
+
+    def get_ref(self, alias_registry: AliasRegistry) -> str:
+        if self.name is None:
+            raise ValueError("Anonymous window has no reference name")
+        return self.name.get_ref(alias_registry)
+
+    def to_sql(
+        self,
+        alias_registry: AliasRegistry,
+        *,
+        include_name: bool = False,
+    ) -> tuple[str, tuple[Any, ...]]:
+        params: list[Any] = []
+        parts: list[str] = []
+
+        if self.base is not None:
+            parts.append(self.base.get_ref(alias_registry))
+
+        if self.partition_by:
+            partition_parts: list[str] = []
+            for expression in self.partition_by:
+                sql, expression_params = self._render_expression(
+                    expression,
+                    alias_registry,
+                )
+                partition_parts.append(sql)
+                params.extend(expression_params)
+            parts.append(f"PARTITION BY {', '.join(partition_parts)}")
+
+        if self.order_by:
+            order_parts: list[str] = []
+            for expression, descending in self.order_by:
+                sql, expression_params = self._render_expression(
+                    expression,
+                    alias_registry,
+                )
+                if descending:
+                    sql = f"{sql} DESC"
+                order_parts.append(sql)
+                params.extend(expression_params)
+            parts.append(f"ORDER BY {', '.join(order_parts)}")
+
+        if self.frame_type is not None and self.frame is not None:
+            parts.append(self._render_frame(self.frame_type, self.frame))
+
+        if self.exclude is not None:
+            parts.append(f"EXCLUDE {self.exclude}")
+
+        sql = " ".join(parts)
+        if include_name:
+            if self.name is None:
+                raise ValueError("Named WINDOW clause requires a window name")
+            sql = f"{self.name.get_ref(alias_registry)} AS ({sql})"
+
+        return sql, tuple(params)
+
+
+class WindowFunctionCall(ComparableExpression):
+    """Represents a SQL function call with an OVER clause."""
+
+    def __init__(
+        self,
+        function: FunctionCall | FilteredFunctionCall,
+        window: Window,
+    ) -> None:
+        self.function: FunctionCall | FilteredFunctionCall = function
+        self.window: Window = window
+        self._alias: Alias | None = None
+
+    def as_(self, alias: Alias | str) -> WindowFunctionCall:
+        result = copy(self)
+        result._alias = alias if isinstance(alias, Alias) else Alias(alias)
+        return result
+
+    def get_alias(self) -> Alias | None:
+        return self._alias
+
+    def to_sql(
+        self,
+        alias_registry: AliasRegistry,
+        *,
+        include_alias: bool = False,
+    ) -> tuple[str, tuple[Any, ...]]:
+        func_sql, func_params = self.function.to_sql(alias_registry)
+
+        if self.window.name is not None and not (
+            self.window.partition_by
+            or self.window.order_by
+            or self.window.base is not None
+            or self.window.frame_type is not None
+            or self.window.exclude is not None
+        ):
+            window_sql = self.window.get_ref(alias_registry)
+            window_params: tuple[Any, ...] = ()
+        else:
+            window_body, window_params = self.window.to_sql(alias_registry)
+            window_sql = f"({window_body})"
+
+        sql = f"{func_sql} OVER {window_sql}"
+        if include_alias and self._alias is not None:
+            sql = f"{sql} AS {self._alias.get_ref(alias_registry)}"
+
+        return sql, func_params + window_params
+
+    def get_ref(self, alias_registry: AliasRegistry) -> str:
+        return self.to_sql(alias_registry)[0]
+
+    def __repr__(self) -> str:
+        if self._alias is None:
+            return f"WindowFunctionCall({self.function!r})"
+        return f"WindowFunctionCall({self.function!r} AS {self._alias!r})"
+
+    def __hash__(self) -> int:
+        raise TypeError(f"unhashable type: '{type(self).__name__}'")
 
 
 def text_op(

@@ -587,6 +587,7 @@ If no columns are provided, the builder emits `SELECT *`.
 | `group_by_grouping_sets(*column_sets)` | Add `GROUPING SETS` | Requires at least one set. Empty tuples become `()`. |
 | `having(*conditions)` | Add a `HAVING` clause | Requires grouping. |
 | `having_by(**kwargs)` | Add equality-based `HAVING` filters | Requires grouping. |
+| `window(name, ...)` | Add a named `WINDOW` clause | Supports `base`, `partition_by`, `order_by`, `descending`, `rows`, `range_`, `groups`, and `exclude`. |
 | `order_by(*columns, descending=False)` | Add `ORDER BY` | Repeated calls merge columns. `descending=True` applies `DESC`. |
 
 ### `insert(table, or_replace=False, or_ignore=False)`
@@ -647,7 +648,7 @@ query = delete().from_(users).where(users.id == 1)
 `func` is a dynamic SQL function registry. It converts attribute access into an uppercased SQL function name.
 
 ```python
-from sql_fusion import Alias, Table, func, select
+from sql_fusion import Alias, Table, Window, func, select
 
 orders = Table("orders")
 count_orders = Alias("count_orders")
@@ -669,6 +670,72 @@ Examples:
 - `func.count(table.id).as_(Alias("count_orders"))` -> `COUNT("a"."id") AS "count_orders"`
 
 String and numeric literals are parameterized automatically.
+
+## Window Functions
+
+Call `.over()` on any `func` expression to render an `OVER` clause.
+
+```python
+orders = Table("orders")
+
+query, params = (
+    select(
+        orders.user_id,
+        orders.id,
+        func.rank()
+        .over(
+            partition_by=orders.user_id,
+            order_by=orders.total,
+            descending=True,
+        )
+        .as_("total_rank"),
+        func.sum(orders.total)
+        .over(
+            partition_by=orders.user_id,
+            order_by=orders.id,
+            rows=Window.Rows.between(
+                Window.Rows.unbounded_preceding(),
+                Window.Rows.current_row(),
+            ),
+        )
+        .as_("running_total"),
+    )
+    .from_(orders)
+    .compile()
+)
+```
+
+Reusable named windows are supported with `select.window()`.
+
+```python
+query, params = (
+    select(
+        orders.user_id,
+        orders.id,
+        func.sum(orders.total).over("by_user").as_("running_total"),
+    )
+    .from_(orders)
+    .window(
+        "by_user",
+        partition_by=orders.user_id,
+        order_by=orders.id,
+        rows=Window.Rows.between(Window.Rows.unbounded_preceding(), Window.Rows.current_row()),
+    )
+    .compile()
+)
+```
+
+Examples:
+
+- `func.row_number().over(order_by=orders.id)` -> `ROW_NUMBER() OVER (ORDER BY "a"."id")`
+- `func.sum(orders.total).over(partition_by=orders.user_id)` -> `SUM("a"."total") OVER (PARTITION BY "a"."user_id")`
+- `func.rank().over("ranked")` -> `RANK() OVER "ranked"`
+- `.window("ranked", partition_by=..., order_by=...)` -> `WINDOW "ranked" AS (...)`
+- `rows=Window.Rows.between(Window.Rows.unbounded_preceding(), Window.Rows.current_row())` -> `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`
+- `range_=Window.Range.between(Window.Range.interval_preceding(3, "DAYS"), Window.Range.interval_following(3, "DAYS"))` -> `RANGE BETWEEN INTERVAL 3 DAYS PRECEDING AND INTERVAL 3 DAYS FOLLOWING`
+- `exclude="CURRENT ROW"` appends `EXCLUDE CURRENT ROW` to the window specification
+- `func.sum(table.amount).filter(table.kind != "x").over(order_by=table.id)` -> `SUM("a"."amount") FILTER (WHERE "a"."kind" != ?) OVER (...)`
+- `Window(base="ranked", rows=Window.Rows.between(Window.Rows.unbounded_preceding(), Window.Rows.current_row()))` renders a chained window specification
 
 ## CTEs
 
@@ -782,15 +849,15 @@ The library also exposes a few built-in compile-time helpers:
 ## Feature Comparison
 
 
-| Project | Focus | SQL coverage | SQL injection protected | Automatic alias management | Advanced features | Dialect/output model | Takeaway |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Py-QueryBuilder | Template-driven filter rendering | No direct CRUD builder; it renders a `WHERE` fragment into a Jinja template | Yes, via JinjaSQL qmark placeholders and a separate params list | No, subquery and join aliases are template-defined rather than auto-managed by the builder | Nested rule groups, operator mapping, field pruning | Jinja2 + JinjaSQL, SQL formatting | Best for UI-driven search forms, not for composing full statements |
-| simple-query-builder-python | Small mutable CRUD helper | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Mostly yes, because execution uses `?` placeholders and a params tuple; `get_sql(with_values=True)` can inline values for display | No, subquery and join aliases are supplied manually in the input data | `JOIN`, `GROUP BY`, `HAVING`, `UNION`, `EXCEPT`, `INTERSECT`, `LIMIT`, `OFFSET` | SQLite-first, raw SQL string builder | Simple and approachable, but the SQL surface is modest |
-| sqlquerybuilder | Django-ORM-style queryset wrapper | Basic read/write queries | No, it renders a ready SQL string with values embedded into the query text | No, subquery and join aliases are handled manually in query strings | Filters and excludes, joins, grouping, ordering, `extra()`, slicing, `with_nolock()` | SQLite-oriented, with SQL Server pagination branches in code | Convenient for ORM-like chaining, but not aimed at deep SQL composition |
-| python-sql | Rich Pythonic SQL builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it keeps placeholders separate from args and can switch param styles via flavor | Partial, it can auto-alias tables and some subqueries, while join aliases are still often explicit | `JOIN`, subqueries, CTEs, `DISTINCT ON`, windows, `RETURNING`, `MERGE`, `UNION` / `INTERSECT` / `EXCEPT` | Dialect/flavor system with multiple param styles | Very broad SQL coverage and strong backend flexibility |
-| PyPika | Mature fluent query builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | No by default, it renders literal SQL strings with values injected into the output | Partial, it auto-aliases some subqueries and duplicate joins, but most table and join aliases are explicit | `JOIN`, subqueries, CTEs, set operations, analytics/window helpers, DDL support | Dialect-aware with vendor-specific extensions | One of the broadest and most extensible builders in the set |
-| SQLFactory | General-purpose SQL builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it emits placeholders and keeps args separately | No, subquery and join aliases are mostly explicit and part of the statement shape | `JOIN`, subselects, CTEs, window functions, set operations, `INSERT ... SELECT`, MySQL-style duplicate-key handling | MySQL / SQLite / PostgreSQL / Oracle / custom dialects, async execution helpers | Full-featured and explicit, with a heavier API than lightweight builders |
-| sql_fusion | Lightweight chainable builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it returns `(sql, params)` and leaves binding to the caller | Yes, it auto-assigns stable table aliases and reuses them for subqueries and joins | `JOIN` variants including `CROSS`, `SEMI`, `ANTI`, subqueries, recursive CTEs, `ROLLUP`, `CUBE`, `GROUPING SETS`, functions, comments, `EXPLAIN` / `ANALYZE`, `DELETE RETURNING` | Backend-agnostic, `compile_expression()` hook for rewrites | Best when you want a compact, composable builder with post-processing hooks and no execution layer |
+| Project | Focus | SQL coverage | SQL injection protected | Automatic alias management | Window functions | Advanced features | Dialect/output model | Takeaway |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Py-QueryBuilder | Template-driven filter rendering | No direct CRUD builder; it renders a `WHERE` fragment into a Jinja template | Yes, via JinjaSQL qmark placeholders and a separate params list | No, subquery and join aliases are template-defined rather than auto-managed by the builder | No dedicated API; possible only by writing window SQL in templates | Nested rule groups, operator mapping, field pruning | Jinja2 + JinjaSQL, SQL formatting | Best for UI-driven search forms, not for composing full statements |
+| simple-query-builder-python | Small mutable CRUD helper | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Mostly yes, because execution uses `?` placeholders and a params tuple; `get_sql(with_values=True)` can inline values for display | No, subquery and join aliases are supplied manually in the input data | No dedicated API | `JOIN`, `GROUP BY`, `HAVING`, `UNION`, `EXCEPT`, `INTERSECT`, `LIMIT`, `OFFSET` | SQLite-first, raw SQL string builder | Simple and approachable, but the SQL surface is modest |
+| sqlquerybuilder | Django-ORM-style queryset wrapper | Basic read/write queries | No, it renders a ready SQL string with values embedded into the query text | No, subquery and join aliases are handled manually in query strings | Not general-purpose; uses `ROW_NUMBER() OVER (...)` internally for one SQL Server pagination path | Filters and excludes, joins, grouping, ordering, `extra()`, slicing, `with_nolock()` | SQLite-oriented, with SQL Server pagination branches in code | Convenient for ORM-like chaining, but not aimed at deep SQL composition |
+| python-sql | Rich Pythonic SQL builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it keeps placeholders separate from args and can switch param styles via flavor | Partial, it can auto-alias tables and some subqueries, while join aliases are still often explicit | Rich support: named windows, aggregate/window functions, `FILTER`, `ROWS` / `RANGE` / `GROUPS`, `EXCLUDE` | `JOIN`, subqueries, CTEs, `DISTINCT ON`, windows, `RETURNING`, `MERGE`, `UNION` / `INTERSECT` / `EXCEPT` | Dialect/flavor system with multiple param styles | Very broad SQL coverage and strong backend flexibility |
+| PyPika | Mature fluent query builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | No by default, it renders literal SQL strings with values injected into the output | Partial, it auto-aliases some subqueries and duplicate joins, but most table and join aliases are explicit | Broad analytics helpers: ranking/value/aggregate windows, partition/order, `ROWS` / `RANGE`, and `QUALIFY` | `JOIN`, subqueries, CTEs, set operations, analytics/window helpers, DDL support | Dialect-aware with vendor-specific extensions | One of the broadest and most extensible builders in the set |
+| SQLFactory | General-purpose SQL builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it emits placeholders and keeps args separately | No, subquery and join aliases are mostly explicit and part of the statement shape | Yes: `WindowableFunction.over(...)`, ranking/value functions, partition/order, and frame objects | `JOIN`, subselects, CTEs, window functions, set operations, `INSERT ... SELECT`, MySQL-style duplicate-key handling | MySQL / SQLite / PostgreSQL / Oracle / custom dialects, async execution helpers | Full-featured and explicit, with a heavier API than lightweight builders |
+| sql_fusion | Lightweight chainable builder | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | Yes, it returns `(sql, params)` and leaves binding to the caller | Yes, it auto-assigns stable table aliases and reuses them for subqueries and joins | Yes: `func.*().over(...)`, `select.window(...)`, `FILTER`, named/chained windows, `ROWS` / `RANGE` / `GROUPS`, `EXCLUDE` | `JOIN` variants including `CROSS`, `SEMI`, `ANTI`, subqueries, recursive CTEs, `ROLLUP`, `CUBE`, `GROUPING SETS`, functions, comments, `EXPLAIN` / `ANALYZE`, `DELETE RETURNING` | Backend-agnostic, `compile_expression()` hook for rewrites | Best when you want a compact, composable builder with post-processing hooks and no execution layer |
 
 ## Syntax Comparison
 
@@ -806,3 +873,15 @@ object, the snippet uses it.
 | simple-query-builder-python | `qb.select("users").where([["active", "=", True]]).join("orders", on=[["users.id", "=", "orders.user_id"]]).all()` |
 | sqlquerybuilder | `Queryset("users").filter(active=True).join("orders", on="users.id=orders.user_id")` |
 | Py-QueryBuilder | `QueryBuilder("app.users", filters).render("query.sql", query)` |
+
+### Window Syntax Comparison
+
+| Project | Representative window syntax |
+| --- | --- |
+| sql_fusion | `func.sum(orders.total).filter(orders.status != "cancelled").over(partition_by=orders.user_id, order_by=orders.created_at, rows=Window.Rows.between(Window.Rows.unbounded_preceding(), Window.Rows.current_row())).as_("running_total")` |
+| PyPika | `an.Sum(t.amount).over(t.account_id).orderby(t.date).rows(an.Preceding(), an.CURRENT_ROW).as_("running_total")` |
+| python-sql | `Sum(t.amount, filter_=t.status != "cancelled", window=Window([t.user_id], order_by=[t.created_at], frame="ROWS", start="UNBOUNDED PRECEDING", end="CURRENT ROW"))` |
+| SQLFactory | `Sum("amount").over(partition_by=["user_id"], order=[("created_at", Direction.ASC)], frame=Frame(FrameType.ROWS, Preceding(), CurrentRow()))` |
+| simple-query-builder-python | No dedicated window API; pass a raw selected expression if needed. |
+| sqlquerybuilder | No general-purpose window API; `ROW_NUMBER() OVER (...)` appears only in an internal pagination branch. |
+| Py-QueryBuilder | No dedicated window API; write the window expression in the Jinja SQL template. |
