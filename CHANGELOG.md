@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.4.0 - 2026-08-11
+
+### Added
+
+- Window function support through `func.*().over(...)`, including inline
+  `PARTITION BY` / `ORDER BY` clauses, reusable named windows via
+  `select.window()`, aggregate `FILTER` clauses, `ROWS` / `RANGE` / `GROUPS`
+  frames, chained windows, and `EXCLUDE` clauses.
+- README examples and API documentation for window functions across SQLite and
+  DuckDB-style usage.
+
+### Changed
+
+- Optimized the README for long-tail search queries around Python SQL query
+  builders while keeping the project name consistently written as
+  `sql_fusion`.
+- Reworked the README introduction and headings to position `sql_fusion` as a
+  lightweight, fluent, composable Python SQL query builder.
+- Added README sections for PyPika and SQLAlchemy positioning, common FAQ
+  search intent, and clearer database-support expectations.
+- Corrected the documented Python requirement from Python 3.14+ to Python
+  3.11+, matching package metadata.
+
+### Fixed
+
+- Removed an unsupported README example for custom table aliases.
+- Corrected the `text_op()` README example to use SQL-expression `OR` via `|`
+  instead of Python's `or`.
+
 ## 1.3.0 - 2026-08-07
 
 ### Added
